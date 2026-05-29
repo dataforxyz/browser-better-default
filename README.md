@@ -10,6 +10,14 @@ but works with any `dmenu`-style menu.
 ![CI](https://github.com/dataforxyz/browser-picker/actions/workflows/ci.yml/badge.svg)
 ![wayland](https://img.shields.io/badge/wayland-friendly-blue)
 
+<p align="center">
+  <img src="assets/picker.png" alt="The picker menu" height="300">
+  &nbsp;&nbsp;
+  <img src="assets/editor.png" alt="The rules editor" height="300">
+</p>
+
+<p align="center"><em>Left: pick a browser + profile per link. Right: smart-default rules editor.</em></p>
+
 ## Why
 
 If you keep several browsers and many profiles (work, personal, clients, AI accounts…),
