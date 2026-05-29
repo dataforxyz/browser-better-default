@@ -7,7 +7,8 @@ open directly in the right profile.
 Built for [omarchy](https://omarchy.org) / Hyprland + [walker](https://github.com/abenz1267/walker),
 but works with any `dmenu`-style menu.
 
-![flow](https://img.shields.io/badge/wayland-friendly-blue)
+![CI](https://github.com/dataforxyz/browser-picker/actions/workflows/ci.yml/badge.svg)
+![wayland](https://img.shields.io/badge/wayland-friendly-blue)
 
 ## Why
 
@@ -19,12 +20,18 @@ and remembers the decisions you want to make permanent.
 
 - **Picker on every link** — choose browser + profile from a menu (`walker --dmenu`).
 - **Smart defaults** — rules like `github.com/myorg/myrepo → Chromium (Work)` open
-  directly, no menu. Plain text = substring match (covers a URL *and its child paths*);
-  `*`/`?` = glob. First match wins.
+  directly, no menu. Plain text matches on **path/host boundaries** (covers a URL *and its
+  child paths*, but `…/repo` won't match `…/repo-staging`); `*`/`?` = glob; `regex:` prefix
+  = full regex. First match wins.
 - **In-flow rule creation** — pick *📌 Always open this site in…* from the menu and a GTK
   editor opens **pre-filled** from the current URL; trim the scope, pick a profile, Save.
-- **GTK rules editor** — enable/disable, edit patterns, reorder priority (▲▼), and
-  **⟳ Rescan profiles** to auto-detect installed browsers/profiles.
+- **Private/incognito** — pick *🕶 Open in a private window…* to launch any profile in a
+  private window (`--incognito` / `--private-window` chosen per browser family).
+- **Default for unmatched links** — optionally route everything that matches no rule to a
+  chosen profile (a catch-all), instead of always showing the menu.
+- **GTK rules editor** — enable/disable, edit patterns, reorder priority (▲▼), set the
+  default, **⟳ Rescan profiles** to auto-detect browsers, and ⚠ warnings for rules that
+  point at a renamed/missing profile.
 - **Routes** `http`, `https`, and `mailto`.
 
 ## Install
@@ -57,6 +64,10 @@ Two files in `~/.config/browser-picker/`:
 
 Both are read fresh on every link click — no daemon, no restart.
 
+See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full reference: pattern
+syntax (plain / glob / `regex:` / catch-all), the editor, profile detection, and
+troubleshooting.
+
 ## How it works
 
 `browser-picker` is registered as an `x-scheme-handler/*` handler. On each link it checks
@@ -73,6 +84,17 @@ Firefox-family `profiles.ini`.
   limitation, not this tool). Chromium-family handle concurrent profiles fine.
 - *Rescan* only **adds** newly found profiles; it won't delete entries you've removed by
   hand (so custom entries like a bare `Brave` survive).
+
+## Development
+
+```sh
+bash tests/run.sh   # shellcheck + bash syntax + py_compile + unit tests
+```
+
+- `tests/test_matching.sh` — `matches()` (boundary/glob/regex) and `private_flag()`.
+- `tests/test_rules.py` — `default_pattern`, `normcmd`, `model_items`, `load_rules`.
+
+CI runs the same suite on every push/PR (see `.github/workflows/ci.yml`).
 
 ## License
 

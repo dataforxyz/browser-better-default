@@ -1,21 +1,17 @@
 #!/bin/bash
 # browser-picker — pick a browser + profile when opening a link, with smart-default rules.
-# Default http/https handler (browser-picker.desktop).
+# Default http/https/mailto handler (browser-picker.desktop).
 # Config (edit via the "Browser Picker Rules" app, the in-menu "Always open…", or by hand):
 #   ~/.config/browser-picker/browsers.conf   browser+profile entries
 #   ~/.config/browser-picker/rules.conf      smart-default rules
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/browser-picker"
 RULESFILE="$CONF/rules.conf"
-EDIT_LABEL="⚙  Edit rules…"
 REMEMBER_LABEL="📌  Always open this site in…"
+PRIVATE_LABEL="🕶  Open in a private window…"
+EDIT_LABEL="⚙  Edit rules…"
 
-mapfile -t ENTRIES < <(grep -vE '^\s*(#|$)' "$CONF/browsers.conf" 2>/dev/null)
-mapfile -t RULES   < <(grep -vE '^\s*(#|$)' "$RULESFILE"          2>/dev/null)
-
-url="$1"
-
-resolve() {  # label -> command string
+resolve() {  # label -> command string (looks in ENTRIES)
   local label="$1" e
   for e in "${ENTRIES[@]}"; do
     [ "${e%%|||*}" = "$label" ] && { printf '%s' "${e#*|||}"; return 0; }
@@ -28,6 +24,32 @@ launch() {  # <command-string> <urls...> -> run detached
   eval "setsid -f $cmd \"\$@\"" >/dev/null 2>&1
 }
 
+private_flag() {  # command-string -> private/incognito flag for that browser family
+  case "$1" in
+    *zen-browser*|*firefox*|*librewolf*|*waterfox*) printf -- '--private-window' ;;
+    *) printf -- '--incognito' ;;  # chromium / brave / chrome / edge
+  esac
+}
+
+# matches <pattern> <url> -> 0 if the URL matches. Modes:
+#   regex:RE    -> bash regex
+#   has * or ?  -> glob over whole URL
+#   ends with / -> prefix match (URL contains the pattern)
+#   otherwise   -> substring on BOTH path/host boundaries (start-or-[/:] on the left,
+#                  end-or-[/?#:] on the right) so "github.com/org/repo" matches that repo
+#                  and its children, but not "…/repo-staging" nor "notgithub.com".
+matches() {
+  local pat="$1" url="$2"
+  # shellcheck disable=SC2053  # the *[*?]* branch intentionally leaves $pat unquoted to glob-match
+  case "$pat" in
+    regex:*) [[ "$url" =~ ${pat#regex:} ]] ;;
+    *[*?]*)  [[ "$url" == $pat ]] ;;
+    */)      [[ "$url" == *"$pat"* ]] ;;
+    *)       [[ "$url" == "$pat" || "$url" == "$pat"[/?\#:]* \
+              || "$url" == *[/:]"$pat" || "$url" == *[/:]"$pat"[/?\#:]* ]] ;;
+  esac
+}
+
 menu() {  # prompt on $1, options on stdin -> selected line on stdout
   if command -v omarchy-launch-walker >/dev/null 2>&1; then
     omarchy-launch-walker --dmenu --width 380 --minheight 1 --maxheight 500 -p "$1" 2>/dev/null
@@ -36,48 +58,72 @@ menu() {  # prompt on $1, options on stdin -> selected line on stdout
   fi
 }
 
-entry_labels() { for e in "${ENTRIES[@]}"; do printf '%s\n' "${e%%|||*}"; done; }
+entry_labels() { local e; for e in "${ENTRIES[@]}"; do printf '%s\n' "${e%%|||*}"; done; }
 
-# 1) Smart defaults: first enabled, matching rule wins — skips the menu.
-if [ -n "$url" ]; then
-  for r in "${RULES[@]}"; do
-    en="${r%%|||*}"; rest="${r#*|||}"
-    pat="${rest%%|||*}"; lbl="${rest#*|||}"
-    [ "$en" = "1" ] || continue
-    [ -z "$pat" ] && continue
-    if [[ "$pat" == *[*?]* ]]; then
-      [[ "$url" == $pat ]] || continue
-    else
-      [[ "$url" == *"$pat"* ]] || continue
-    fi
-    if cmd="$(resolve "$lbl")"; then
-      launch "$cmd" "$@"
-      exit 0
-    fi
-    break   # rule names an unknown label -> fall through to the picker
-  done
-fi
+notify() { command -v notify-send >/dev/null 2>&1 && notify-send "Browser Picker" "$1"; }
 
-# 2) Show the picker.
-build_menu() {
-  [ -n "$url" ] && printf '%s\n' "$REMEMBER_LABEL"
-  entry_labels
-  printf '%s\n' "$EDIT_LABEL"
-}
-choice="$(build_menu | menu "Open link in…")"
-[ -z "$choice" ] && exit 0
+main() {
+  mapfile -t ENTRIES < <(grep -vE '^\s*(#|$)' "$CONF/browsers.conf" 2>/dev/null)
+  mapfile -t RULES   < <(grep -vE '^\s*(#|$)' "$RULESFILE"          2>/dev/null)
+  local url="$1" r en rest pat lbl cmd choice target
 
-case "$choice" in
-  "$EDIT_LABEL")
+  # 1) Smart defaults: first enabled, matching rule wins — skips the menu.
+  if [ -n "$url" ]; then
+    for r in "${RULES[@]}"; do
+      en="${r%%|||*}"; rest="${r#*|||}"
+      pat="${rest%%|||*}"; lbl="${rest#*|||}"
+      [ "$en" = "1" ] || continue
+      [ -z "$pat" ] && continue
+      matches "$pat" "$url" || continue
+      if cmd="$(resolve "$lbl")"; then
+        launch "$cmd" "$@"
+        return 0
+      fi
+      break   # rule names an unknown label -> fall through to the picker
+    done
+  fi
+
+  # 2) Show the picker.
+  if [ "${#ENTRIES[@]}" -eq 0 ]; then
+    notify "No browsers configured — opening setup."
     setsid -f browser-picker-rules >/dev/null 2>&1
-    exit 0
-    ;;
-  "$REMEMBER_LABEL")
-    # Open the rules editor pre-filled with this URL; it opens the link after Save.
-    setsid -f browser-picker-rules "$url" >/dev/null 2>&1
-    exit 0
-    ;;
-esac
+    return 0
+  fi
+  if ! command -v omarchy-launch-walker >/dev/null 2>&1 && ! command -v walker >/dev/null 2>&1; then
+    notify "No menu found. Install 'walker' to use the picker."
+    echo "browser-picker: needs 'walker' or 'omarchy-launch-walker' (https://github.com/abenz1267/walker)" >&2
+    return 1
+  fi
 
-cmd="$(resolve "$choice")" || exit 0
-launch "$cmd" "$@"
+  choice="$(
+    { [ -n "$url" ] && printf '%s\n' "$REMEMBER_LABEL"
+      entry_labels
+      [ -n "$url" ] && printf '%s\n' "$PRIVATE_LABEL"
+      printf '%s\n' "$EDIT_LABEL"; } | menu "Open link in…"
+  )"
+  [ -z "$choice" ] && return 0
+
+  case "$choice" in
+    "$EDIT_LABEL")
+      setsid -f browser-picker-rules >/dev/null 2>&1
+      return 0 ;;
+    "$REMEMBER_LABEL")
+      # Open the rules editor pre-filled with this URL; it opens the link after Save.
+      setsid -f browser-picker-rules "$url" >/dev/null 2>&1
+      return 0 ;;
+    "$PRIVATE_LABEL")
+      target="$(entry_labels | menu "Private window in…")"
+      [ -z "$target" ] && return 0
+      cmd="$(resolve "$target")" || return 0
+      launch "$cmd $(private_flag "$cmd")" "$@"
+      return 0 ;;
+  esac
+
+  cmd="$(resolve "$choice")" || return 0
+  launch "$cmd" "$@"
+}
+
+# Run main only when executed directly; sourcing (e.g. tests) just loads the functions.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

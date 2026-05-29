@@ -1,8 +1,12 @@
 # Smart-default rules — managed by the "Browser Picker Rules" app (browser-picker-rules).
 # You can also edit by hand. Format:  enabled|||pattern|||label
 #   enabled : 1 = on, 0 = off
-#   pattern : plain text = substring match (catches a URL and all its child paths)
-#             contains * or ? = glob match against the whole URL
+#   pattern : plain text = boundary-aware substring (catches a URL and its child paths,
+#                          but not "repo-staging" for a "repo" pattern)
+#             * or ?      = glob match against the whole URL
+#             regex:RE    = regular-expression match against the whole URL
+#             *           = catch-all "default for unmatched links" (keep it last)
 #   label   : must exactly match a Label in browsers.conf
-# First enabled match wins (top to bottom). Example (disabled):
+# First enabled match wins (top to bottom). Examples (disabled):
 # 0|||github.com/myorg/myrepo|||Chromium — Default
+# 0|||regex:^https://(mail|cal)\.google\.com/|||Chromium — Default

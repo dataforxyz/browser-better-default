@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # shellcheck for linting; python3-gi + GTK4 typelib so the editor module imports.
+          sudo apt-get install -y --no-install-recommends \
+            shellcheck python3-gi gir1.2-gtk-4.0
+
+      - name: Run test suite
+        run: bash tests/run.sh

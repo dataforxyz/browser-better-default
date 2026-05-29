@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # browser-picker-rules — GUI to manage smart-default rules for browser-picker.
-# Each rule: [enabled checkbox] [editable pattern] [browser/profile dropdown] [▲ ▼ ✕].
+# Each rule: [enabled checkbox] [editable pattern] [browser/profile dropdown] [⚠] [▲ ▼ ✕].
+# Plus a "Unmatched links →" default (writes a catch-all "*" rule).
 #
 # Optional arg: a URL. When given, a new editable row is pre-filled with a sensible
 # pattern derived from that URL, and the link is opened (via browser-picker) after Save.
@@ -12,6 +13,8 @@ CONF = os.path.join(GLib.get_user_config_dir(), "browser-picker")
 BROWSERS = os.path.join(CONF, "browsers.conf")
 RULES = os.path.join(CONF, "rules.conf")
 HOME = os.path.expanduser("~")
+ASK = "Always ask (show the menu)"
+NONE_FOUND = "(no browsers found)"
 
 
 def read_lines(path):
@@ -54,10 +57,18 @@ def normcmd(c):
     return " ".join(c.replace('"', "").split())
 
 
+def model_items(labels, label):
+    """Dropdown choices for a rule, preserving an unknown label so it isn't lost."""
+    items = list(labels)
+    missing = bool(label) and label not in items
+    if missing:
+        items = [label] + items
+    return (items or [NONE_FOUND]), missing
+
+
 def discover_browsers():
     """Return [(label, command)] for installed browsers + their profiles."""
     found = []
-    # Chromium-family: profiles live in "Local State" -> profile.info_cache.
     for disp, binname, base in (
         ("Chromium", "chromium", f"{HOME}/.config/chromium"),
         ("Brave", "brave", f"{HOME}/.config/BraveSoftware/Brave-Browser"),
@@ -70,7 +81,8 @@ def discover_browsers():
         cache = {}
         if os.path.exists(ls):
             try:
-                cache = json.load(open(ls)).get("profile", {}).get("info_cache", {})
+                with open(ls) as f:
+                    cache = json.load(f).get("profile", {}).get("info_cache", {})
             except Exception:
                 cache = {}
         if cache:
@@ -79,7 +91,6 @@ def discover_browsers():
                 found.append((f"{disp} — {name}", f'{binname} --profile-directory="{dirname}"'))
         else:
             found.append((disp, binname))
-    # Firefox-family: profiles live in profiles.ini -> [Profile*] Name=.
     for disp, binname, ini in (
         ("Firefox", "firefox", f"{HOME}/.mozilla/firefox/profiles.ini"),
         ("Zen", "zen-browser", f"{HOME}/.config/zen/profiles.ini"),
@@ -109,12 +120,15 @@ class RulesApp(Gtk.Application):
         super().__init__(application_id="dev.local.BrowserPickerRules")
         self.url = url
 
+    def model_items(self, label):
+        return model_items(self.labels, label)
+
     def do_activate(self):
         self.labels = load_labels()
         self.rows = []
 
         win = Gtk.ApplicationWindow(application=self, title="Browser Picker — Rules")
-        win.set_default_size(740, 480)
+        win.set_default_size(780, 500)
         self.win = win
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -125,9 +139,9 @@ class RulesApp(Gtk.Application):
         help_lbl = Gtk.Label(xalign=0)
         help_lbl.set_markup(
             "Links matching an <b>enabled</b> rule open directly in the chosen profile "
-            "(no menu).\nPattern: plain text = <b>substring</b> match (covers a URL and "
-            "its child paths); use <b>*</b> or <b>?</b> for a glob. First match wins — use "
-            "▲ ▼ to set priority."
+            "(no menu).\nPattern: plain text matches on path boundaries (covers a URL and "
+            "its child paths); <b>*</b>/<b>?</b> = glob; <b>regex:</b> prefix = regex. "
+            "First match wins — use ▲ ▼ to set priority."
         )
         help_lbl.set_wrap(True)
         root.append(help_lbl)
@@ -140,7 +154,7 @@ class RulesApp(Gtk.Application):
             root.append(ctx)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        for text, w in (("On", 30), ("Pattern", 300), ("Open in", 200), ("", 96)):
+        for text, w in (("On", 30), ("Pattern", 300), ("Open in", 200), ("", 110)):
             l = Gtk.Label(label=text, xalign=0)
             l.set_size_request(w, -1)
             header.append(l)
@@ -150,6 +164,30 @@ class RulesApp(Gtk.Application):
         self.list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         scroller.set_child(self.list_box)
         root.append(scroller)
+
+        # Default for unmatched links (a trailing catch-all "*" rule).
+        rules = load_rules()
+        default_label = None
+        if rules and rules[-1][0] and rules[-1][1] == "*":
+            default_label = rules[-1][2]
+            rules = rules[:-1]
+
+        defbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        defbox.append(Gtk.Label(label="Unmatched links →", xalign=0))
+        ditems, dmissing = self.model_items(default_label)
+        self.default_items = [ASK] + ditems
+        self.default_drop = Gtk.DropDown.new_from_strings(self.default_items)
+        if default_label and default_label in ditems:
+            self.default_drop.set_selected(1 + ditems.index(default_label))
+        else:
+            self.default_drop.set_selected(0)
+        self.default_warn = Gtk.Label(label="⚠")
+        self.default_warn.set_visible(dmissing)
+        if dmissing:
+            self.default_warn.set_tooltip_text(f"Profile '{default_label}' not found.")
+        defbox.append(self.default_drop)
+        defbox.append(self.default_warn)
+        root.append(defbox)
 
         btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         add_btn = Gtk.Button(label="＋ Add rule")
@@ -172,7 +210,7 @@ class RulesApp(Gtk.Application):
         if self.url:
             self.add_row(True, default_pattern(self.url), None)
             prefill_entry = self.rows[-1]["entry"]
-        for en, pat, lbl in load_rules():
+        for en, pat, lbl in rules:
             self.add_row(en, pat, lbl)
         if not self.rows:
             self.add_row(True, "", None)
@@ -194,14 +232,21 @@ class RulesApp(Gtk.Application):
 
         entry = Gtk.Entry()
         entry.set_text(pattern or "")
-        entry.set_placeholder_text("e.g. github.com/myorg/myrepo")
+        entry.set_placeholder_text("e.g. github.com/myorg/myrepo  (or regex:… )")
         entry.set_hexpand(True)
         entry.set_size_request(300, -1)
 
-        drop = Gtk.DropDown.new_from_strings(self.labels or ["(no browsers found)"])
-        if label in self.labels:
-            drop.set_selected(self.labels.index(label))
+        items, missing = self.model_items(label)
+        drop = Gtk.DropDown.new_from_strings(items)
+        if label in items:
+            drop.set_selected(items.index(label))
         drop.set_size_request(200, -1)
+
+        warn = Gtk.Label(label="⚠")
+        warn.set_size_request(18, -1)
+        warn.set_visible(missing)
+        if missing:
+            warn.set_tooltip_text(f"Profile '{label}' not found — pick another or Rescan profiles.")
 
         up = Gtk.Button(label="▲")
         down = Gtk.Button(label="▼")
@@ -209,12 +254,13 @@ class RulesApp(Gtk.Application):
         for b in (up, down, remove):
             b.set_size_request(28, -1)
 
-        rec = {"box": row, "check": check, "entry": entry, "drop": drop}
+        rec = {"box": row, "check": check, "entry": entry, "drop": drop,
+               "warn": warn, "items": items}
         up.connect("clicked", lambda _b, r=rec: self.move_row(r, -1))
         down.connect("clicked", lambda _b, r=rec: self.move_row(r, +1))
         remove.connect("clicked", lambda _b, r=rec: self.remove_row(r))
 
-        for w in (check, entry, drop, up, down, remove):
+        for w in (check, entry, drop, warn, up, down, remove):
             row.append(w)
         self.list_box.append(row)
         self.rows.append(rec)
@@ -234,6 +280,17 @@ class RulesApp(Gtk.Application):
         self.list_box.remove(rec["box"])
         self.rows.remove(rec)
 
+    def _refresh_drop(self, drop, items, cur, warn=None):
+        new_items, missing = self.model_items(cur)
+        drop.set_model(Gtk.StringList.new(new_items))
+        if cur in new_items:
+            drop.set_selected(new_items.index(cur))
+        if warn is not None:
+            warn.set_visible(missing)
+            if missing:
+                warn.set_tooltip_text(f"Profile '{cur}' not found — pick another or Rescan profiles.")
+        return new_items
+
     def on_rescan(self, _btn):
         existing = read_lines(BROWSERS)
         seen = {normcmd(l.split("|||", 1)[1]) for l in existing if "|||" in l}
@@ -249,35 +306,51 @@ class RulesApp(Gtk.Application):
             f.write("# Browsers + profiles offered by the picker.\n"
                     "# Format: Label|||command   (command may contain quotes; URL appended)\n")
             f.write("\n".join(lines) + "\n")
-        # Refresh every dropdown's choices, keeping current selections.
-        old = self.labels
         self.labels = load_labels()
         for rec in self.rows:
             idx = rec["drop"].get_selected()
-            cur = old[idx] if (old and 0 <= idx < len(old)) else None
-            rec["drop"].set_model(Gtk.StringList.new(self.labels or ["(no browsers found)"]))
-            if cur in self.labels:
-                rec["drop"].set_selected(self.labels.index(cur))
+            cur = rec["items"][idx] if 0 <= idx < len(rec["items"]) else None
+            if cur == NONE_FOUND:  # placeholder, not a real (missing) profile
+                cur = None
+            rec["items"] = self._refresh_drop(rec["drop"], rec["items"], cur, rec["warn"])
+        # Default dropdown
+        didx = self.default_drop.get_selected()
+        dcur = self.default_items[didx] if 0 <= didx < len(self.default_items) else ASK
+        ditems, dmissing = self.model_items(None if dcur in (ASK, NONE_FOUND) else dcur)
+        self.default_items = [ASK] + ditems
+        self.default_drop.set_model(Gtk.StringList.new(self.default_items))
+        self.default_drop.set_selected(self.default_items.index(dcur) if dcur in self.default_items else 0)
+        self.default_warn.set_visible(dmissing)
+        if dmissing:
+            self.default_warn.set_tooltip_text(f"Profile '{dcur}' not found.")
         self.status.set_text(f"Rescan: +{added} new profile(s) ({len(self.labels)} total).")
 
     def on_save(self, _btn):
         os.makedirs(CONF, exist_ok=True)
         lines = [
             "# Smart-default rules — managed by the \"Browser Picker Rules\" app (browser-picker-rules).",
-            "# Format: enabled|||pattern|||label   (enabled 1/0; pattern substring or */? glob)",
+            "# Format: enabled|||pattern|||label   (enabled 1/0; plain/glob/regex: pattern)",
         ]
         n = 0
+        missing = 0
         for r in self.rows:
             pat = r["entry"].get_text().strip()
             if not pat:
                 continue
             idx = r["drop"].get_selected()
-            if not self.labels or idx >= len(self.labels):
+            items = r["items"]
+            if not items or idx >= len(items) or items[idx] == NONE_FOUND:
                 continue
-            lbl = self.labels[idx]
+            lbl = items[idx]
+            if lbl not in self.labels:
+                missing += 1
             en = "1" if r["check"].get_active() else "0"
             lines.append(f"{en}|||{pat}|||{lbl}")
             n += 1
+        # Catch-all default for unmatched links.
+        didx = self.default_drop.get_selected()
+        if 0 < didx < len(self.default_items) and self.default_items[didx] != NONE_FOUND:
+            lines.append(f"1|||*|||{self.default_items[didx]}")
         with open(RULES, "w") as f:
             f.write("\n".join(lines) + "\n")
 
@@ -286,8 +359,12 @@ class RulesApp(Gtk.Application):
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.quit()
         else:
-            self.status.set_text(f"Saved {n} rule(s).")
+            msg = f"Saved {n} rule(s)."
+            if missing:
+                msg += f"  ⚠ {missing} reference a missing profile."
+            self.status.set_text(msg)
 
 
-url = sys.argv[1] if len(sys.argv) > 1 else None
-RulesApp(url).run(None)
+if __name__ == "__main__":
+    url = sys.argv[1] if len(sys.argv) > 1 else None
+    RulesApp(url).run(None)
