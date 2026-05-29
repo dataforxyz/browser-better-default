@@ -8,8 +8,8 @@
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/browser-picker"
 RULESFILE="$CONF/rules.conf"
 REMEMBER_LABEL="📌  Always open this site in…"
-PRIVATE_LABEL="🕶  Open in a private window…"
 EDIT_LABEL="⚙  Edit rules…"
+PRIV_SUFFIX="  🕶 Private"
 
 resolve() {  # label -> command string (looks in ENTRIES)
   local label="$1" e
@@ -59,6 +59,7 @@ menu() {  # prompt on $1, options on stdin -> selected line on stdout
 }
 
 entry_labels() { local e; for e in "${ENTRIES[@]}"; do printf '%s\n' "${e%%|||*}"; done; }
+entry_private_labels() { local e; for e in "${ENTRIES[@]}"; do printf '%s\n' "${e%%|||*}$PRIV_SUFFIX"; done; }
 
 notify() { command -v notify-send >/dev/null 2>&1 && notify-send "Browser Picker" "$1"; }
 
@@ -97,8 +98,8 @@ main() {
 
   choice="$(
     { [ -n "$url" ] && printf '%s\n' "$REMEMBER_LABEL"
-      entry_labels
-      [ -n "$url" ] && printf '%s\n' "$PRIVATE_LABEL"
+      entry_labels             # regular profiles first
+      entry_private_labels     # then the same profiles as private-window twins
       printf '%s\n' "$EDIT_LABEL"; } | menu "Open link in…"
   )"
   [ -z "$choice" ] && return 0
@@ -111,13 +112,15 @@ main() {
       # Open the rules editor pre-filled with this URL; it opens the link after Save.
       setsid -f browser-picker-rules "$url" >/dev/null 2>&1
       return 0 ;;
-    "$PRIVATE_LABEL")
-      target="$(entry_labels | menu "Private window in…")"
-      [ -z "$target" ] && return 0
-      cmd="$(resolve "$target")" || return 0
-      launch "$cmd $(private_flag "$cmd")" "$@"
-      return 0 ;;
   esac
+
+  # Private-window twin?  "<label>  🕶 Private"
+  if [[ "$choice" == *"$PRIV_SUFFIX" ]]; then
+    target="${choice%"$PRIV_SUFFIX"}"
+    cmd="$(resolve "$target")" || return 0
+    launch "$cmd $(private_flag "$cmd")" "$@"
+    return 0
+  fi
 
   cmd="$(resolve "$choice")" || return 0
   launch "$cmd" "$@"

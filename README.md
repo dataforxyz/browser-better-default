@@ -33,8 +33,9 @@ and remembers the decisions you want to make permanent.
   = full regex. First match wins.
 - **In-flow rule creation** — pick *📌 Always open this site in…* from the menu and a GTK
   editor opens **pre-filled** from the current URL; trim the scope, pick a profile, Save.
-- **Private/incognito** — pick *🕶 Open in a private window…* to launch any profile in a
-  private window (`--incognito` / `--private-window` chosen per browser family).
+- **Private/incognito** — every profile also appears as a *🕶 Private* twin in the menu
+  (regular profiles first, private ones below), so one pick opens it in a private window
+  (`--incognito` / `--private-window` chosen per browser family).
 - **Default for unmatched links** — optionally route everything that matches no rule to a
   chosen profile (a catch-all), instead of always showing the menu.
 - **GTK rules editor** — enable/disable, edit patterns, reorder priority (▲▼), set the
