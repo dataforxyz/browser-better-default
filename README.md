@@ -71,7 +71,8 @@ existing config), and registers the picker as the default web/link handler.
 Two files in `~/.config/browser-picker/`:
 
 - **`browsers.conf`** — `Label|||command` per line. Auto-fill with *Rescan profiles*.
-- **`rules.conf`** — `enabled|||pattern|||label` per line. Managed by the editor.
+- **`rules.conf`** — `enabled|||pattern|||label[|||private]` per line (optional 4th field
+  `1` opens matching links in a private window). Managed by the editor.
 
 Both are read fresh on every link click — no daemon, no restart.
 
@@ -110,6 +111,10 @@ profile):
 | the same repo, repeatedly                               | `github.com/org/repo` |
 | a few repos under one org                               | `github.com/org`  |
 | a few orgs on a host you only use with one profile      | `github.com`      |
+
+Picks made in a **private/incognito** window are learned separately: repeat one and the
+shortcut offers a *private* default (e.g. *⭐ open in Brave 🕶 Private*), which writes a rule
+that always opens that scope in a private window. Normal and private habits never mix.
 
 This is a **local recommender** (`browser-picker-recommend`) — no network, no API keys, no
 LLM; your URLs never leave the machine. History lives in

@@ -38,10 +38,12 @@ check(bprec.common_prefix([["a", "b"], ["x", "y"]]) == [], "common_prefix none")
 
 
 def store_from(urls_labels):
-    """Replay (url, label) regular picks into a fresh store."""
+    """Replay picks into a fresh store. Each item is (url, label) or (url, label, private)."""
     store = {"events": []}
-    for ts, (url, label) in enumerate(urls_labels):
-        bprec.record_event(store, url, label, ts)
+    for ts, item in enumerate(urls_labels):
+        url, label = item[0], item[1]
+        private = item[2] if len(item) > 2 else False
+        bprec.record_event(store, url, label, ts, private)
     return store
 
 
@@ -61,12 +63,12 @@ check(peek_after([("https://github.com/orgA/repo1", W)], "https://github.com/org
 
 # Same repo: 2 priors -> on the 3rd open, offer the repo-level rule.
 check(peek_after([("https://github.com/orgA/repo1/a", W), ("https://github.com/orgA/repo1/b", W)],
-                 "https://github.com/orgA/repo1/c") == ("github.com/orgA/repo1", W),
+                 "https://github.com/orgA/repo1/c") == ("github.com/orgA/repo1", W, False),
       "same repo -> repo offer")
 
 # Two different repos in one org -> generalize to the org (and only if the new link is under it).
 check(peek_after([("https://github.com/orgA/repo1", W), ("https://github.com/orgA/repo2", W)],
-                 "https://github.com/orgA/repo3") == ("github.com/orgA", W),
+                 "https://github.com/orgA/repo3") == ("github.com/orgA", W, False),
       "org generalization")
 check(peek_after([("https://github.com/orgA/repo1", W), ("https://github.com/orgA/repo2", W)],
                  "https://github.com/orgB/repo9") is None,
@@ -74,7 +76,7 @@ check(peek_after([("https://github.com/orgA/repo1", W), ("https://github.com/org
 
 # Different orgs, one profile -> generalize to the whole host.
 check(peek_after([("https://github.com/orgA/r", W), ("https://github.com/orgB/r", W)],
-                 "https://github.com/orgC/r") == ("github.com", W),
+                 "https://github.com/orgC/r") == ("github.com", W, False),
       "host generalization")
 
 # Contested host: another profile also uses the org -> don't offer the org rule.
@@ -84,14 +86,27 @@ check(peek_after([("https://github.com/orgA/repo1", W),
                  "https://github.com/orgA/repo3") is None,
       "contested org -> no offer")
 
-# Private/non-http picks are never recorded (caller passes only regular picks; mailto is ignored).
+# --- private windows are a distinct habit ---
+# Repeated PRIVATE picks -> offer a private default (3rd field True).
+check(peek_after([("https://chatgpt.com/c/1", W, True), ("https://chatgpt.com/c/2", W, True)],
+                 "https://chatgpt.com/c/3") == ("chatgpt.com/c", W, True),
+      "private picks -> private offer")
+# Mixing normal + private for the same profile/scope is contested -> no offer either way.
+check(peek_after([("https://chatgpt.com/c/1", W, True), ("https://chatgpt.com/c/2", W, False)],
+                 "https://chatgpt.com/c/3") is None,
+      "normal+private mix -> no offer")
+
+# mailto / non-http is ignored.
 store = store_from([("mailto:me@example.com", W)])
 check(store["events"] == [], "non-http not recorded")
+# private picks ARE recorded, flagged.
+store = store_from([("https://x.com/a", W, True)])
+check(store["events"][0].get("private") is True, "private pick recorded with flag")
 
 # Tunable threshold via settings.conf is honoured by threshold() (here just check the floor of 2).
 check(bprec.threshold() >= 2, "threshold floor")
 
-# --- add_rule: idempotent, inserted before a catch-all ---
+# --- add_rule: idempotent, inserted before a catch-all, private writes a 4th field ---
 tmp = tempfile.mkdtemp()
 bprec.CONF = tmp
 bprec.RULES_FILE = os.path.join(tmp, "rules.conf")
@@ -99,9 +114,11 @@ with open(bprec.RULES_FILE, "w") as f:
     f.write("1|||github.com/org|||A\n1|||*|||A\n")
 check(bprec.add_rule("github.com/orgA", W) is True, "add_rule writes new")
 check(bprec.add_rule("github.com/orgA", W) is False, "add_rule idempotent")
+check(bprec.add_rule("chatgpt.com", W, private=True) is True, "add_rule writes private")
 with open(bprec.RULES_FILE) as f:
     body = f.read()
 check(body.index("github.com/orgA") < body.index("1|||*|||A"), "add_rule inserts before catch-all")
+check(f"1|||chatgpt.com|||{W}|||1" in body, "add_rule private writes 4th field")
 
 if fails:
     print("FAILED:")

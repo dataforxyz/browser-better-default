@@ -38,9 +38,10 @@ def load_rules():
     rules = []
     for ln in read_lines(RULES):
         parts = ln.split("|||")
-        if len(parts) == 3:
-            en, pat, lbl = parts
-            rules.append((en == "1", pat, lbl))
+        if len(parts) >= 3:
+            en, pat, lbl = parts[0], parts[1], parts[2]
+            priv = len(parts) > 3 and parts[3] == "1"  # optional 4th field: private window
+            rules.append((en == "1", pat, lbl, priv))
     return rules
 
 
@@ -189,7 +190,7 @@ class RulesApp(Gtk.Application):
             root.append(ctx)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        for text, w in (("On", 30), ("Pattern", 300), ("Open in", 200), ("", 110)):
+        for text, w in (("On", 30), ("Pattern", 300), ("Open in", 200), ("Priv", 40), ("", 110)):
             l = Gtk.Label(label=text, xalign=0)
             l.set_size_request(w, -1)
             header.append(l)
@@ -245,8 +246,8 @@ class RulesApp(Gtk.Application):
         if self.url:
             self.add_row(True, self.pattern or default_pattern(self.url), self.label)
             prefill_entry = self.rows[-1]["entry"]
-        for en, pat, lbl in rules:
-            self.add_row(en, pat, lbl)
+        for en, pat, lbl, priv in rules:
+            self.add_row(en, pat, lbl, priv)
         if not self.rows:
             self.add_row(True, "", None)
 
@@ -258,7 +259,7 @@ class RulesApp(Gtk.Application):
                 return False
             GLib.idle_add(focus)
 
-    def add_row(self, enabled, pattern, label):
+    def add_row(self, enabled, pattern, label, private=False):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
         check = Gtk.CheckButton()
@@ -277,6 +278,11 @@ class RulesApp(Gtk.Application):
             drop.set_selected(items.index(label))
         drop.set_size_request(200, -1)
 
+        priv = Gtk.CheckButton()
+        priv.set_active(bool(private))
+        priv.set_size_request(40, -1)
+        priv.set_tooltip_text("Open matching links in a private / incognito window")
+
         warn = Gtk.Label(label="⚠")
         warn.set_size_request(18, -1)
         warn.set_visible(missing)
@@ -290,12 +296,12 @@ class RulesApp(Gtk.Application):
             b.set_size_request(28, -1)
 
         rec = {"box": row, "check": check, "entry": entry, "drop": drop,
-               "warn": warn, "items": items}
+               "priv": priv, "warn": warn, "items": items}
         up.connect("clicked", lambda _b, r=rec: self.move_row(r, -1))
         down.connect("clicked", lambda _b, r=rec: self.move_row(r, +1))
         remove.connect("clicked", lambda _b, r=rec: self.remove_row(r))
 
-        for w in (check, entry, drop, warn, up, down, remove):
+        for w in (check, entry, drop, priv, warn, up, down, remove):
             row.append(w)
         self.list_box.append(row)
         self.rows.append(rec)
@@ -364,7 +370,7 @@ class RulesApp(Gtk.Application):
         os.makedirs(CONF, exist_ok=True)
         lines = [
             "# Smart-default rules — managed by the \"Browser Picker Rules\" app (browser-picker-rules).",
-            "# Format: enabled|||pattern|||label   (enabled 1/0; plain/glob/regex: pattern)",
+            "# Format: enabled|||pattern|||label[|||private]   (enabled/private 1/0; plain/glob/regex pattern)",
         ]
         n = 0
         missing = 0
@@ -380,7 +386,10 @@ class RulesApp(Gtk.Application):
             if lbl not in self.labels:
                 missing += 1
             en = "1" if r["check"].get_active() else "0"
-            lines.append(f"{en}|||{pat}|||{lbl}")
+            if r["priv"].get_active():
+                lines.append(f"{en}|||{pat}|||{lbl}|||1")
+            else:
+                lines.append(f"{en}|||{pat}|||{lbl}")
             n += 1
         # Catch-all default for unmatched links.
         didx = self.default_drop.get_selected()

@@ -68,19 +68,21 @@ have_recommender() { command -v browser-picker-recommend >/dev/null 2>&1; }
 main() {
   mapfile -t ENTRIES < <(grep -vE '^\s*(#|$)' "$CONF/browsers.conf" 2>/dev/null)
   mapfile -t RULES   < <(grep -vE '^\s*(#|$)' "$RULESFILE"          2>/dev/null)
-  local url="$1" r en rest pat lbl cmd choice target
-  local sug sug_pattern="" sug_label="" sug_item=""
+  local url="$1" r en rest pat lbl rpriv cmd choice target
+  local sug sug_pattern="" sug_label="" sug_priv="0" sug_item=""
 
   # 1) Smart defaults: first enabled, matching rule wins — skips the menu.
   if [ -n "$url" ]; then
     for r in "${RULES[@]}"; do
       en="${r%%|||*}"; rest="${r#*|||}"
-      pat="${rest%%|||*}"; lbl="${rest#*|||}"
+      pat="${rest%%|||*}"; rest="${rest#*|||}"
+      lbl="${rest%%|||*}"
+      rpriv=0; [ "$rest" != "$lbl" ] && rpriv="${rest#*|||}"   # optional 4th field: private
       [ "$en" = "1" ] || continue
       [ -z "$pat" ] && continue
       matches "$pat" "$url" || continue
       if cmd="$(resolve "$lbl")"; then
-        launch "$cmd" "$@"
+        if [ "$rpriv" = "1" ]; then launch "$cmd $(private_flag "$cmd")" "$@"; else launch "$cmd" "$@"; fi
         return 0
       fi
       break   # rule names an unknown label -> fall through to the picker
@@ -104,8 +106,13 @@ main() {
   if [ -n "$url" ] && have_recommender; then
     sug="$(browser-picker-recommend peek --url "$url" 2>/dev/null)"
     if [ -n "$sug" ]; then
-      sug_pattern="${sug%%$'\t'*}"; sug_label="${sug#*$'\t'}"
-      sug_item="⭐  Make default — open in $sug_label   ($sug_pattern)"
+      sug_pattern="${sug%%$'\t'*}"; rest="${sug#*$'\t'}"
+      sug_label="${rest%%$'\t'*}"; sug_priv="${rest#*$'\t'}"
+      if [ "$sug_priv" = "1" ]; then
+        sug_item="⭐  Make default — open in $sug_label$PRIV_SUFFIX   ($sug_pattern)"
+      else
+        sug_item="⭐  Make default — open in $sug_label   ($sug_pattern)"
+      fi
     fi
   fi
 
@@ -131,9 +138,15 @@ main() {
   # The "⭐ Make default" shortcut: open in the learned profile AND write the rule.
   if [ -n "$sug_item" ] && [ "$choice" = "$sug_item" ]; then
     cmd="$(resolve "$sug_label")" || return 0
-    launch "$cmd" "$@"
-    browser-picker-recommend addrule --pattern "$sug_pattern" --label "$sug_label" >/dev/null 2>&1
-    notify "Default set: $sug_pattern → $sug_label"
+    if [ "$sug_priv" = "1" ]; then
+      launch "$cmd $(private_flag "$cmd")" "$@"
+      browser-picker-recommend addrule --pattern "$sug_pattern" --label "$sug_label" --private 1 >/dev/null 2>&1
+      notify "Default set: $sug_pattern → $sug_label (private)"
+    else
+      launch "$cmd" "$@"
+      browser-picker-recommend addrule --pattern "$sug_pattern" --label "$sug_label" >/dev/null 2>&1
+      notify "Default set: $sug_pattern → $sug_label"
+    fi
     return 0
   fi
 
@@ -142,6 +155,9 @@ main() {
     target="${choice%"$PRIV_SUFFIX"}"
     cmd="$(resolve "$target")" || return 0
     launch "$cmd $(private_flag "$cmd")" "$@"
+    # Learn the private habit too (so a private default can be offered).
+    [ -n "$url" ] && have_recommender && \
+      browser-picker-recommend record --url "$url" --label "$target" --private 1 >/dev/null 2>&1
     return 0
   fi
 

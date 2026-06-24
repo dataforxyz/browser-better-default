@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 # browser-picker-recommend — local, offline habit recommender for browser-picker.
 #
-# Learns which browser/profile you manually pick (regular windows only — never private twins)
-# for which links, and once you've opened a similar place a couple of times, lets the picker
-# offer a one-click "make default" entry at the top of its menu. It generalizes across URLs
-# (same repo -> the repo; many repos in an org -> the org; many orgs on a host you only use
-# with one profile -> the host), staying "pure" so a suggested rule never captures links you
-# open with a *different* profile. No network, no API keys: your URLs never leave the machine.
-# GUI-free and importable, so the pure logic is unit-tested without GTK.
+# Learns which browser/profile (and whether you used a private window) you pick for which
+# links, and once you've opened a similar place the same way a couple of times, lets the
+# picker offer a one-click "make default" entry at the top of its menu. It generalizes across
+# URLs (same repo -> the repo; many repos in an org -> the org; many orgs on a host you only
+# use with one profile -> the host), staying "pure" so a suggested rule never captures links
+# you open with a *different* profile (or a different private/normal choice). No network, no
+# API keys: your URLs never leave the machine. GUI-free and importable, so the pure logic is
+# unit-tested without GTK.
 #
 # CLI (called by bin/browser-picker):
-#   browser-picker-recommend record --url URL --label LABEL
-#       Record one manual (regular-window) pick.
-#   browser-picker-recommend peek --url URL
-#       If a learned habit covers URL, print "pattern\tlabel" (the picker shows it on top).
-#   browser-picker-recommend addrule --pattern PATTERN --label LABEL
-#       Append "1|||PATTERN|||LABEL" to rules.conf (idempotent; before any catch-all).
+#   browser-picker-recommend record --url URL --label LABEL [--private 1]
+#   browser-picker-recommend peek   --url URL          -> prints "pattern\tlabel\tprivate"
+#   browser-picker-recommend addrule --pattern P --label L [--private 1]
+#       Append "1|||P|||L[|||1]" to rules.conf (idempotent; before any catch-all).
 #
 # Store: ~/.config/browser-picker/history.json   Settings: ~/.config/browser-picker/settings.conf
 import json
@@ -89,6 +88,10 @@ def make_pattern(host, segs):
     return "/".join([host] + list(segs[:SEG_CAP]))
 
 
+def _ident(ev):
+    return (ev.get("label"), bool(ev.get("private")))
+
+
 def _under(host, pat_segs, ev):
     """Is event ev under host + pat_segs prefix? (structural boundary match)"""
     if ev.get("host") != host:
@@ -99,20 +102,21 @@ def _under(host, pat_segs, ev):
     return all(esegs[i] == pat_segs[i] for i in range(len(pat_segs)))
 
 
-def recommend(events, label, host, need):
-    """Best (pattern, count) for (label, host) given >= need picks, or None.
+def recommend(events, label, host, need, private=False):
+    """Best (pattern, count) for (label, private, host) given >= need picks, or None.
 
     Generalizes to the deepest common ancestor of what was actually opened, then keeps the
-    rule pure: it must not also cover links opened with a different profile.
+    rule pure: it must not also cover links opened with a different profile / private choice.
     """
     if not host:
         return None
-    cluster = [e for e in events if e.get("label") == label and e.get("host") == host]
+    ident = (label, bool(private))
+    cluster = [e for e in events if e.get("host") == host and _ident(e) == ident]
     if len(cluster) < need:
         return None
 
     def pure(pat_segs):
-        return not any(_under(host, pat_segs, e) for e in events if e.get("label") != label)
+        return not any(_under(host, pat_segs, e) for e in events if _ident(e) != ident)
 
     pref = common_prefix([e.get("segs") or [] for e in cluster])[:SEG_CAP]
     if pure(pref):
@@ -127,7 +131,7 @@ def recommend(events, label, host, need):
 
 
 def peek(events, host, segs, threshold_n):
-    """For a link about to open, suggest (pattern, label) from prior habits, else None.
+    """For a link about to open, suggest (pattern, label, private) from prior habits, else None.
 
     Needs threshold_n-1 prior picks (so the offer appears on the threshold_n-th open) and the
     suggested pattern must actually cover the link being opened.
@@ -135,53 +139,57 @@ def peek(events, host, segs, threshold_n):
     if not host:
         return None
     need = max(1, threshold_n - 1)
-    seen, best = [], None
+    idents, best = [], None
     for e in events:
-        l = e.get("label")
-        if e.get("host") == host and l not in seen:
-            seen.append(l)
-    for label in seen:
-        rec = recommend(events, label, host, need)
+        if e.get("host") == host and _ident(e) not in idents:
+            idents.append(_ident(e))
+    for label, private in idents:
+        rec = recommend(events, label, host, need, private)
         if not rec:
             continue
         pattern, count = rec
         if not _under(host, pattern.split("/")[1:], {"host": host, "segs": segs}):
             continue
-        if best is None or count > best[2]:
-            best = (pattern, label, count)
-    return (best[0], best[1]) if best else None
+        if best is None or count > best[3]:
+            best = (pattern, label, private, count)
+    return (best[0], best[1], best[2]) if best else None
 
 
-def record_event(store, url, label, ts):
-    """Append one regular-window pick. Returns the host, or None for non-http(s) links."""
+def record_event(store, url, label, ts, private=False):
+    """Append one pick. Returns the host, or None for non-http(s) links."""
     host, segs = url_parts(url)
     if host is None:
         return None
     events = store.setdefault("events", [])
-    events.append({"url": url, "host": host, "segs": segs, "label": label, "ts": ts})
+    ev = {"url": url, "host": host, "segs": segs, "label": label, "ts": ts}
+    if private:
+        ev["private"] = True
+    events.append(ev)
     if len(events) > MAX_EVENTS:
         del events[:-MAX_EVENTS]
     return host
 
 
-def add_rule(pattern, label):
+def add_rule(pattern, label, private=False):
     """Append an enabled rule to rules.conf if absent; keep it before any catch-all '*'."""
     os.makedirs(CONF, exist_ok=True)
+    new = "1|||%s|||%s|||1" % (pattern, label) if private else "1|||%s|||%s" % (pattern, label)
     lines = []
     if os.path.exists(RULES_FILE):
         with open(RULES_FILE) as f:
             lines = [ln.rstrip("\n") for ln in f]
     for ln in lines:
         parts = ln.split("|||")
-        if len(parts) == 3 and parts[1] == pattern and parts[2] == label:
+        if len(parts) >= 3 and parts[1] == pattern and parts[2] == label \
+                and (len(parts) > 3 and parts[3] == "1") == bool(private):
             return False  # already there
     insert_at = len(lines)
     for i, ln in enumerate(lines):
         parts = ln.split("|||")
-        if len(parts) == 3 and parts[1] == "*":
+        if len(parts) >= 3 and parts[1] == "*":
             insert_at = i
             break
-    lines.insert(insert_at, "1|||%s|||%s" % (pattern, label))
+    lines.insert(insert_at, new)
     with open(RULES_FILE, "w") as f:
         f.write("\n".join(lines) + "\n")
     return True
@@ -224,7 +232,7 @@ def main(argv):
         if not url or not label:
             return 2
         store = load_store()
-        record_event(store, url, label, int(time.time()))
+        record_event(store, url, label, int(time.time()), _opt(argv, "--private") == "1")
         save_store(store)
         return 0
     if cmd == "peek":
@@ -234,13 +242,13 @@ def main(argv):
         host, segs = url_parts(url)
         rec = peek(load_store().get("events", []), host, segs, threshold())
         if rec:
-            sys.stdout.write("%s\t%s\n" % (rec[0], rec[1]))
+            sys.stdout.write("%s\t%s\t%s\n" % (rec[0], rec[1], "1" if rec[2] else "0"))
         return 0
     if cmd == "addrule":
         pattern, label = _opt(argv, "--pattern"), _opt(argv, "--label")
         if not pattern or not label:
             return 2
-        add_rule(pattern, label)
+        add_rule(pattern, label, _opt(argv, "--private") == "1")
         return 0
     return 2
 

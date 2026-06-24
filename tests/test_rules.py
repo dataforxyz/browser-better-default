@@ -52,10 +52,12 @@ check(items == [bpr.NONE_FOUND] and not missing, "model_items empty -> sentinel"
 tmp = tempfile.mkdtemp()
 rf = os.path.join(tmp, "rules.conf")
 with open(rf, "w") as f:
-    f.write("# comment\n\n1|||github.com/org|||A\n0|||intranet|||B\n1|||*|||A\n")
+    f.write("# comment\n\n1|||github.com/org|||A\n0|||intranet|||B|||1\n1|||*|||A\n")
 bpr.RULES = rf  # monkeypatch module global read by load_rules()
-check(bpr.load_rules() == [(True, "github.com/org", "A"), (False, "intranet", "B"), (True, "*", "A")],
-      "load_rules parses rules")
+check(bpr.load_rules() == [(True, "github.com/org", "A", False),
+                           (False, "intranet", "B", True),
+                           (True, "*", "A", False)],
+      "load_rules parses rules incl. private 4th field")
 
 if fails:
     print("FAILED:")
