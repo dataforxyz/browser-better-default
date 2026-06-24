@@ -38,3 +38,8 @@ Installed browser-picker.
 Click any link to see the picker. Requires a dmenu-capable menu — walker (preferred)
 or any program providing 'walker --dmenu'.
 EOF
+
+# Web-app link bridge: route links opened from Chromium --app= windows through the picker.
+# Installs the native host; loading the extension is a one-time manual step it prints.
+# Non-fatal — a bridge hiccup (e.g. no python3) must not fail the core install.
+"$REPO/extension/install-bridge.sh" || echo "Web-app bridge step skipped (see extension/install-bridge.sh)."
