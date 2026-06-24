@@ -33,8 +33,8 @@ and remembers the decisions you want to make permanent.
   = full regex. First match wins.
 - **In-flow rule creation** — pick *📌 Always open this site in…* from the menu and a GTK
   editor opens **pre-filled** from the current URL; trim the scope, pick a profile, Save.
-- **Learns your habits** — when you keep opening similar links in the same profile, the
-  picker offers to make it a default on the 3rd time (see below). Fully **local & offline**.
+- **Learns your habits** — repeat a profile for a site and the picker grows a one-click
+  *⭐ Make default* item at the top (see below). Fully **local & offline**.
 - **Private/incognito** — every profile also appears as a *🕶 Private* twin in the menu
   (regular profiles first, private ones below), so one pick opens it in a private window
   (`--incognito` / `--private-window` chosen per browser family).
@@ -90,25 +90,32 @@ Firefox-family `profiles.ini`.
 
 ## Learns your habits
 
-`browser-picker` quietly notes which profile you pick for which link (only **manual,
-regular-window** picks — never private twins or links already auto-routed by a rule). The
-**3rd** time you open a similar place in the same profile, it pops a small
-*Yes / Not now / Never* prompt offering to make it a default. *Yes* opens the rules editor
-**pre-filled** with the suggested pattern and profile so you can review or trim before saving.
+`browser-picker` quietly notes which profile you pick for which link (only **regular-window**
+picks — never private twins, and never links already auto-routed by a rule). Once you've
+opened a similar place in the same profile a couple of times, the **next** time you open a
+matching link the picker shows a one-click shortcut as its **first** menu item:
 
-It **generalizes across URLs** rather than memorizing one address — it suggests the broadest
-pattern that stays *pure* (won't capture links you open with a *different* profile):
+```
+⭐  Make default — open in Chromium — Work   (github.com/myorg)
+```
 
-| What you opened (same profile)                          | Suggested rule    |
+Pick it and the link opens in that profile **and** the rule is written, so it auto-routes from
+then on. No second popup, no extra step — pick a normal profile instead and it just opens (and
+keeps learning). It **generalizes across URLs** rather than memorizing one address, suggesting
+the broadest pattern that stays *pure* (won't capture links you open with a *different*
+profile):
+
+| What you opened (same profile)                          | Shortcut creates  |
 | ------------------------------------------------------- | ----------------- |
-| the same repo, 3×                                       | `github.com/org/repo` |
-| three repos under one org                               | `github.com/org`  |
-| three orgs on a host you only use with one profile      | `github.com`      |
+| the same repo, repeatedly                               | `github.com/org/repo` |
+| a few repos under one org                               | `github.com/org`  |
+| a few orgs on a host you only use with one profile      | `github.com`      |
 
-This is a **local Python recommender** (`browser-picker-recommend`) — no network, no API
-keys, no LLM; your URLs never leave the machine. History lives in
-`~/.config/browser-picker/history.json`. Tune the trigger count with
-`BROWSER_PICKER_SUGGEST_THRESHOLD` (default `3`); *Never* mutes a suggestion for good.
+This is a **local recommender** (`browser-picker-recommend`) — no network, no API keys, no
+LLM; your URLs never leave the machine. History lives in
+`~/.config/browser-picker/history.json`. The shortcut appears on the **3rd** matching open by
+default; tune it with `threshold=N` in `~/.config/browser-picker/settings.conf` (or the
+`BROWSER_PICKER_SUGGEST_THRESHOLD` env var), minimum `2`.
 
 ## Notes / limitations
 

@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 # browser-picker-recommend — local, offline habit recommender for browser-picker.
 #
-# Learns which browser/profile you manually pick for which links and, once you've opened a
-# similar place enough times (default 3), suggests a smart-default rule — generalizing across
-# URLs (same org's repos -> the org; the same repo repeatedly -> that repo; a whole host you
-# only ever use with one profile -> the host). No network, no API keys: your URLs never leave
-# the machine. GUI-free and importable, so the pure logic is unit-tested without GTK.
+# Learns which browser/profile you manually pick (regular windows only — never private twins)
+# for which links, and once you've opened a similar place a couple of times, lets the picker
+# offer a one-click "make default" entry at the top of its menu. It generalizes across URLs
+# (same repo -> the repo; many repos in an org -> the org; many orgs on a host you only use
+# with one profile -> the host), staying "pure" so a suggested rule never captures links you
+# open with a *different* profile. No network, no API keys: your URLs never leave the machine.
+# GUI-free and importable, so the pure logic is unit-tested without GTK.
 #
 # CLI (called by bin/browser-picker):
-#   browser-picker-recommend pick --url URL --label LABEL
-#       Record one manual pick. Print "pattern\tlabel" when a suggestion is ready, else nothing.
-#   browser-picker-recommend dismiss --label LABEL --pattern PATTERN --mode snooze|never
-#       snooze = stop suggesting until a few more matching picks; never = stop permanently.
+#   browser-picker-recommend record --url URL --label LABEL
+#       Record one manual (regular-window) pick.
+#   browser-picker-recommend peek --url URL
+#       If a learned habit covers URL, print "pattern\tlabel" (the picker shows it on top).
+#   browser-picker-recommend addrule --pattern PATTERN --label LABEL
+#       Append "1|||PATTERN|||LABEL" to rules.conf (idempotent; before any catch-all).
 #
-# Store: ~/.config/browser-picker/history.json
+# Store: ~/.config/browser-picker/history.json   Settings: ~/.config/browser-picker/settings.conf
 import json
 import os
 import sys
@@ -24,17 +28,30 @@ CONF = os.path.join(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "browser-picker"
 )
 STORE = os.path.join(CONF, "history.json")
+SETTINGS = os.path.join(CONF, "settings.conf")
+RULES_FILE = os.path.join(CONF, "rules.conf")
 MAX_EVENTS = 1000
 SEG_CAP = 2  # generalize at most to host + 2 path segments (matches rules editor default_pattern)
 
 
 def threshold():
-    """Picks needed before a suggestion fires (env-overridable)."""
+    """Picks of the same place+profile before the picker offers a default.
+
+    settings.conf `threshold=N` wins, then $BROWSER_PICKER_SUGGEST_THRESHOLD, then 3. The
+    file lets you tune it even though the .desktop launcher passes no environment.
+    """
     try:
-        t = int(os.environ.get("BROWSER_PICKER_SUGGEST_THRESHOLD", "3"))
+        with open(SETTINGS) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("threshold="):
+                    return max(2, int(line.split("=", 1)[1]))
+    except (OSError, ValueError):
+        pass
+    try:
+        return max(2, int(os.environ.get("BROWSER_PICKER_SUGGEST_THRESHOLD", "3")))
     except ValueError:
         return 3
-    return t if t > 0 else 3
 
 
 def url_parts(url):
@@ -45,7 +62,7 @@ def url_parts(url):
     if not (low.startswith("http://") or low.startswith("https://")):
         return None, []
     p = urllib.parse.urlsplit(url)
-    host = p.netloc.split("@")[-1].split(":")[0]
+    host = p.netloc.split("@")[-1]  # keep any :port so the pattern matches the real URL
     if host.startswith("www."):
         host = host[4:]
     if not host:
@@ -72,8 +89,8 @@ def make_pattern(host, segs):
     return "/".join([host] + list(segs[:SEG_CAP]))
 
 
-def _matches(host, pat_segs, ev):
-    """Structural boundary match: is event ev under host + pat_segs prefix?"""
+def _under(host, pat_segs, ev):
+    """Is event ev under host + pat_segs prefix? (structural boundary match)"""
     if ev.get("host") != host:
         return False
     esegs = ev.get("segs") or []
@@ -82,82 +99,92 @@ def _matches(host, pat_segs, ev):
     return all(esegs[i] == pat_segs[i] for i in range(len(pat_segs)))
 
 
-def recommend(events, label, host, threshold_n):
-    """Best (pattern, count) to suggest for (label, host), or None.
+def recommend(events, label, host, need):
+    """Best (pattern, count) for (label, host) given >= need picks, or None.
 
     Generalizes to the deepest common ancestor of what was actually opened, then keeps the
-    rule *pure*: it must not also cover links the user opens with a different profile.
+    rule pure: it must not also cover links opened with a different profile.
     """
     if not host:
         return None
     cluster = [e for e in events if e.get("label") == label and e.get("host") == host]
-    if len(cluster) < threshold_n:
+    if len(cluster) < need:
         return None
 
     def pure(pat_segs):
-        return not any(
-            _matches(host, pat_segs, e) for e in events if e.get("label") != label
-        )
+        return not any(_under(host, pat_segs, e) for e in events if e.get("label") != label)
 
     pref = common_prefix([e.get("segs") or [] for e in cluster])[:SEG_CAP]
     if pure(pref):
         return make_pattern(host, pref), len(cluster)
 
-    # Contested scope: another profile also uses it. Narrow to the triggering URL's repo-level
-    # pattern and only suggest if *that* cleanly separates and is itself frequent enough.
     narrow = (cluster[-1].get("segs") or [])[:SEG_CAP]
     if narrow and pure(narrow):
-        cnt = sum(1 for e in cluster if _matches(host, narrow, e))
-        if cnt >= threshold_n:
+        cnt = sum(1 for e in cluster if _under(host, narrow, e))
+        if cnt >= need:
             return make_pattern(host, narrow), cnt
     return None
 
 
-def state_key(label, host):
-    return label + "\x00" + host
+def peek(events, host, segs, threshold_n):
+    """For a link about to open, suggest (pattern, label) from prior habits, else None.
+
+    Needs threshold_n-1 prior picks (so the offer appears on the threshold_n-th open) and the
+    suggested pattern must actually cover the link being opened.
+    """
+    if not host:
+        return None
+    need = max(1, threshold_n - 1)
+    seen, best = [], None
+    for e in events:
+        l = e.get("label")
+        if e.get("host") == host and l not in seen:
+            seen.append(l)
+    for label in seen:
+        rec = recommend(events, label, host, need)
+        if not rec:
+            continue
+        pattern, count = rec
+        if not _under(host, pattern.split("/")[1:], {"host": host, "segs": segs}):
+            continue
+        if best is None or count > best[2]:
+            best = (pattern, label, count)
+    return (best[0], best[1]) if best else None
 
 
-def record_and_recommend(store, url, label, threshold_n, ts):
-    """Append the pick, refresh the cached candidate, and return (pattern, label) to show now."""
+def record_event(store, url, label, ts):
+    """Append one regular-window pick. Returns the host, or None for non-http(s) links."""
     host, segs = url_parts(url)
     if host is None:
-        return None  # don't track non-http(s) links
+        return None
     events = store.setdefault("events", [])
     events.append({"url": url, "host": host, "segs": segs, "label": label, "ts": ts})
     if len(events) > MAX_EVENTS:
         del events[:-MAX_EVENTS]
-
-    state = store.setdefault("state", {})
-    key = state_key(label, host)
-    rec = recommend(events, label, host, threshold_n)
-    if rec is None:
-        # Preserve a "never" so it survives a transiently-contested round.
-        if state.get(key, {}).get("snooze") != -1:
-            state.pop(key, None)
-        return None
-
-    pattern, count = rec
-    snooze = state.get(key, {}).get("snooze", 0)
-    state[key] = {"pattern": pattern, "count": count, "snooze": snooze}
-    if snooze == -1:
-        return None  # muted forever
-    if count >= threshold_n and count >= snooze:
-        return pattern, label
-    return None
+    return host
 
 
-def apply_dismiss(store, label, pattern, mode):
-    """Record the user's response to a suggestion."""
-    state = store.setdefault("state", {})
-    host = pattern.split("/")[0]
-    key = state_key(label, host)
-    st = state.get(key, {"pattern": pattern, "count": 0, "snooze": 0})
-    if mode == "never":
-        st["snooze"] = -1
-    else:  # snooze: re-ask after a few more matching picks
-        st["snooze"] = int(st.get("count", 0)) + threshold()
-    st["pattern"] = pattern
-    state[key] = st
+def add_rule(pattern, label):
+    """Append an enabled rule to rules.conf if absent; keep it before any catch-all '*'."""
+    os.makedirs(CONF, exist_ok=True)
+    lines = []
+    if os.path.exists(RULES_FILE):
+        with open(RULES_FILE) as f:
+            lines = [ln.rstrip("\n") for ln in f]
+    for ln in lines:
+        parts = ln.split("|||")
+        if len(parts) == 3 and parts[1] == pattern and parts[2] == label:
+            return False  # already there
+    insert_at = len(lines)
+    for i, ln in enumerate(lines):
+        parts = ln.split("|||")
+        if len(parts) == 3 and parts[1] == "*":
+            insert_at = i
+            break
+    lines.insert(insert_at, "1|||%s|||%s" % (pattern, label))
+    with open(RULES_FILE, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return True
 
 
 def load_store():
@@ -166,11 +193,10 @@ def load_store():
             d = json.load(f)
         if isinstance(d, dict):
             d.setdefault("events", [])
-            d.setdefault("state", {})
             return d
     except (OSError, ValueError):
         pass
-    return {"events": [], "state": {}}
+    return {"events": []}
 
 
 def save_store(store):
@@ -193,24 +219,28 @@ def main(argv):
     if not argv:
         return 0
     cmd = argv[0]
-    if cmd == "pick":
+    if cmd == "record":
         url, label = _opt(argv, "--url"), _opt(argv, "--label")
         if not url or not label:
             return 2
         store = load_store()
-        rec = record_and_recommend(store, url, label, threshold(), int(time.time()))
+        record_event(store, url, label, int(time.time()))
         save_store(store)
+        return 0
+    if cmd == "peek":
+        url = _opt(argv, "--url")
+        if not url:
+            return 2
+        host, segs = url_parts(url)
+        rec = peek(load_store().get("events", []), host, segs, threshold())
         if rec:
             sys.stdout.write("%s\t%s\n" % (rec[0], rec[1]))
         return 0
-    if cmd == "dismiss":
-        label, pattern = _opt(argv, "--label"), _opt(argv, "--pattern")
-        mode = _opt(argv, "--mode") or "snooze"
-        if not label or not pattern:
+    if cmd == "addrule":
+        pattern, label = _opt(argv, "--pattern"), _opt(argv, "--label")
+        if not pattern or not label:
             return 2
-        store = load_store()
-        apply_dismiss(store, label, pattern, mode)
-        save_store(store)
+        add_rule(pattern, label)
         return 0
     return 2
 
