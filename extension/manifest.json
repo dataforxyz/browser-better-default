@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Browser Picker bridge",
+  "version": "1.0",
+  "description": "Routes links opened from Chromium web-app (--app=) windows through browser-picker instead of a new Chromium window.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnv8u5Qt4zJV4gF53QsX93u0w/fSB07cJiSKhxxKOihZ+VcPhhu0OwfGiJOZGtWzQFDqD4tqLNLDOXMMUS7mMvlI0SdxijP2JRh384YNB473o4hQCfvgXKzkCYPGaLxj4ZCYZli+nmU/tHGSL0MJWnKnzRgp4JMs/PBTcj3p8qjPEZqQmJSAI3ofCcbfctUq6h9kX+kMiZWb+WwMT0Fh6fl2WoTEur9O+UcnlklGi01h5zwVeY1oD/Vh3eAF4P0I7Cjg1x6ulDhzucWNuXfPKTiUiEtMNOCvIDTD9H9cFSCw1jY7UrG46aNIfsC2sykmL56XRembzeABsyf8YasLkHQIDAQAB",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["webNavigation", "tabs", "nativeMessaging"],
+  "host_permissions": ["<all_urls>"]
+}

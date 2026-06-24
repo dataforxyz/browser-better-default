@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""browser-picker native-messaging host.
+
+Reads length-prefixed JSON messages ({"url": "..."}) from the Browser Picker bridge
+extension on stdin and hands each URL to `browser-picker`, which shows the picker (or
+applies a smart-default rule). Installed via extension/install-bridge.sh.
+
+Native-messaging framing: 4-byte little-endian length, then that many UTF-8 JSON bytes.
+We never write to stdout (Chromium would parse it as a host->extension message); all
+diagnostics go to ~/.cache/browser-picker/bridge.log.
+"""
+import json
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import time
+
+LOG = os.path.join(
+    os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
+    "browser-picker",
+    "bridge.log",
+)
+
+
+def log(msg):
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except OSError:
+        pass
+
+
+def find_picker():
+    p = shutil.which("browser-picker")
+    if p:
+        return p
+    here = os.path.dirname(os.path.realpath(__file__))
+    for cand in (os.path.join(here, "browser-picker"),
+                 os.path.expanduser("~/.local/bin/browser-picker")):
+        if os.path.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def read_message():
+    raw_len = sys.stdin.buffer.read(4)
+    if len(raw_len) < 4:
+        return None  # stdin closed -> extension/Chromium went away
+    (length,) = struct.unpack("<I", raw_len)
+    data = sys.stdin.buffer.read(length)
+    if len(data) < length:
+        return None
+    return json.loads(data.decode("utf-8"))
+
+
+def main():
+    picker = find_picker()
+    if not picker:
+        log("ERROR browser-picker not found on PATH or in known locations")
+        return 1
+    log("host started (picker=%s)" % picker)
+    while True:
+        try:
+            msg = read_message()
+        except (ValueError, struct.error) as e:
+            log("bad message: %s" % e)
+            continue
+        if msg is None:
+            log("stdin closed, exiting")
+            return 0
+        msg = msg or {}
+        url = msg.get("url")
+        if not url:
+            log("message without url: %r" % msg)
+            continue
+        # The extension reports every non-normal-source navigation so the log reveals the
+        # real window types; it only sets act=True for ones we should actually divert.
+        act = msg.get("act", True)
+        log("nav src=%s new=%s act=%s %s"
+            % (msg.get("srcType"), msg.get("newType"), act, url))
+        if not act:
+            continue
+        try:
+            subprocess.Popen(
+                [picker, url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as e:
+            log("launch failed: %s" % e)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
