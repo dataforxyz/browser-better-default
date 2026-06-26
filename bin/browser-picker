@@ -50,6 +50,20 @@ matches() {
   esac
 }
 
+menu_prompt() {  # URL -> concise prompt; strips query/fragment so tokens don't sit in the menu title
+  local u="$1"
+  if [ -z "$u" ]; then
+    printf 'Open link in…'
+    return
+  fi
+  u="${u%%#*}"
+  u="${u%%\?*}"
+  if [ "${#u}" -gt 90 ]; then
+    u="${u:0:87}…"
+  fi
+  printf 'Open %s in…' "$u"
+}
+
 menu() {  # prompt on $1, options on stdin -> selected line on stdout
   local prompt="$1"
   if [ -n "${BROWSER_PICKER_MENU:-}" ]; then
@@ -141,7 +155,7 @@ main() {
       # Manual options at the end (smart ordering makes them rarely needed).
       [ -n "$url" ] && printf '%s\n' "$REMEMBER_LABEL"
       printf '%s\n' "$EDIT_LABEL"
-    } | menu "Open link in…"
+    } | menu "$(menu_prompt "$url")"
   )"
   [ -z "$choice" ] && return 0
 

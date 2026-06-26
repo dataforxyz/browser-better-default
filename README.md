@@ -26,7 +26,7 @@ and remembers the decisions you want to make permanent.
 
 ## Features
 
-- **Picker on every link** — choose browser + profile from a menu (`walker --dmenu` by default, or your `BROWSER_PICKER_MENU`).
+- **Picker on every link** — choose browser + profile from a menu (`walker --dmenu` by default, or your `BROWSER_PICKER_MENU`); the prompt shows the target URL (without query/fragment noise).
 - **Smart defaults** — rules like `github.com/myorg/myrepo → Chromium (Work)` open
   directly, no menu. Plain text matches on **path/host boundaries** (covers a URL *and its
   child paths*, but `…/repo` won't match `…/repo-staging`); `*`/`?` = glob; `regex:` prefix

@@ -46,5 +46,9 @@ pf 'brave'                                     '--incognito'
 pf 'firefox -P "default"'                      '--private-window'
 pf 'zen-browser -P "Default (release)"'        '--private-window'
 
+mp() { local got; got="$(menu_prompt "$1")"; [ "$got" = "$2" ] || { printf 'FAIL: menu_prompt %q -> %s (want %s)\n' "$1" "$got" "$2"; fail=1; }; }
+mp 'https://example.com/path?token=secret#frag' 'Open https://example.com/path in…'
+mp '' 'Open link in…'
+
 [ "$fail" -eq 0 ] && echo "test_matching.sh: all passed"
 exit "$fail"
