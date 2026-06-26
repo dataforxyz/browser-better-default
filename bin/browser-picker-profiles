@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""browser-picker-profiles — discover browser/profile entries for browsers.conf.
+
+Kept GUI-free so the shell picker can cheaply auto-add newly created profiles without
+starting the GTK rules editor. The editor imports similar pure logic for its Rescan button.
+"""
+import configparser
+import json
+import os
+import shutil
+import sys
+
+CONF = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "browser-picker"
+)
+BROWSERS = os.path.join(CONF, "browsers.conf")
+HOME = os.path.expanduser("~")
+HEADER = (
+    "# Browsers + profiles offered by the picker.\n"
+    "# Format: Label|||command   (command may contain quotes; URL appended)\n"
+)
+
+
+def read_lines(path):
+    if not os.path.exists(path):
+        return []
+    out = []
+    with open(path) as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#") or "|||" not in s:
+                continue
+            out.append(s)
+    return out
+
+
+def normcmd(c):
+    return " ".join(c.replace('"', "").split())
+
+
+def discover_browsers():
+    """Return [(label, command)] for installed browsers + their profiles."""
+    found = []
+    for disp, binname, base in (
+        ("Chromium", "chromium", f"{HOME}/.config/chromium"),
+        ("Brave", "brave", f"{HOME}/.config/BraveSoftware/Brave-Browser"),
+        ("Chrome", "google-chrome-stable", f"{HOME}/.config/google-chrome"),
+        ("Edge", "microsoft-edge-stable", f"{HOME}/.config/microsoft-edge"),
+    ):
+        if not shutil.which(binname):
+            continue
+        ls = os.path.join(base, "Local State")
+        cache = {}
+        if os.path.exists(ls):
+            try:
+                with open(ls) as f:
+                    cache = json.load(f).get("profile", {}).get("info_cache", {})
+            except (OSError, ValueError):
+                cache = {}
+        if cache:
+            for dirname, info in cache.items():
+                name = info.get("name") or dirname
+                found.append((f"{disp} — {name}", f'{binname} --profile-directory="{dirname}"'))
+        else:
+            found.append((disp, binname))
+    for disp, binname, ini in (
+        ("Firefox", "firefox", f"{HOME}/.mozilla/firefox/profiles.ini"),
+        ("Zen", "zen-browser", f"{HOME}/.config/zen/profiles.ini"),
+    ):
+        if not shutil.which(binname):
+            continue
+        names = []
+        if os.path.exists(ini):
+            cp = configparser.ConfigParser()
+            try:
+                cp.read(ini)
+                for sec in cp.sections():
+                    if cp.has_option(sec, "Name"):
+                        names.append(cp.get(sec, "Name"))
+            except (configparser.Error, OSError):
+                names = []
+        if names:
+            for n in names:
+                found.append((f"{disp} — {n}", f'{binname} -P "{n}"'))
+        else:
+            found.append((disp, binname))
+    return found
+
+
+def rescan():
+    os.makedirs(CONF, exist_ok=True)
+    existing = read_lines(BROWSERS)
+    seen = {normcmd(l.split("|||", 1)[1]) for l in existing if "|||" in l}
+    lines = list(existing)
+    added = []
+    for label, cmd in discover_browsers():
+        if normcmd(cmd) in seen:
+            continue
+        line = f"{label}|||{cmd}"
+        lines.append(line)
+        seen.add(normcmd(cmd))
+        added.append(line)
+    if added or not os.path.exists(BROWSERS):
+        with open(BROWSERS, "w") as f:
+            f.write(HEADER)
+            if lines:
+                f.write("\n".join(lines) + "\n")
+    return added, len(lines)
+
+
+def main(argv):
+    quiet = "--quiet" in argv
+    cmd = next((a for a in argv if not a.startswith("-")), "rescan")
+    if cmd not in ("rescan", "scan"):
+        print("Usage: browser-picker-profiles [rescan] [--quiet]", file=sys.stderr)
+        return 2
+    added, total = rescan()
+    if not quiet:
+        for line in added:
+            print("added " + line)
+        print(f"Rescan: +{len(added)} new profile(s) ({total} total).")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

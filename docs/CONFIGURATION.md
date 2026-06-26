@@ -32,15 +32,18 @@ Zen — Default (release)|||zen-browser -P "Default (release)"
 Brave|||brave
 ```
 
-Instead of writing these by hand, open the editor and click **⟳ Rescan profiles** — it
-auto-detects installed browsers and their profiles:
+Instead of writing these by hand, let the picker auto-add new profiles when it opens, or open
+the editor and click **⟳ Rescan profiles**. Profile detection scans installed browsers and
+their profiles:
 
 - **Chromium family** (Chromium, Brave, Chrome, Edge): from each browser's
   `Local State` → `profile.info_cache`.
 - **Firefox family** (Firefox, Zen): from `profiles.ini` (`[Profile*] Name=`).
 
-Rescan only **adds** newly found profiles; it never deletes entries you've added or kept by
-hand (so a bare `Brave` entry survives).
+Auto-rescan / Rescan only **adds** newly found profiles; it never deletes entries you've
+added or kept by hand (so a bare `Brave` entry survives). Set
+`BROWSER_PICKER_AUTO_RESCAN=0` to disable automatic updates and keep `browsers.conf` fully
+manual.
 
 ## rules.conf
 
@@ -142,6 +145,7 @@ xdg-mime default org.gnome.Evolution.desktop x-scheme-handler/mailto  # optional
 rm -f ~/.local/bin/browser-picker \
       ~/.local/bin/browser-picker-rules \
       ~/.local/bin/browser-picker-recommend \
+      ~/.local/bin/browser-picker-profiles \
       ~/.local/bin/browser-picker-host \
       ~/.local/share/applications/browser-picker.desktop \
       ~/.local/share/applications/browser-picker-rules.desktop

@@ -58,6 +58,7 @@ mkdir -p "$BIN" "$APPS" "$CFG"
 ln -sf "$REPO/bin/browser-picker"           "$BIN/browser-picker"
 ln -sf "$REPO/bin/browser-picker-rules"     "$BIN/browser-picker-rules"
 ln -sf "$REPO/bin/browser-picker-recommend" "$BIN/browser-picker-recommend"
+ln -sf "$REPO/bin/browser-picker-profiles"  "$BIN/browser-picker-profiles"
 
 # Desktop entries: expand @BINDIR@ to the absolute bin path (xdg needs an abs Exec).
 for d in browser-picker browser-picker-rules; do

@@ -41,8 +41,8 @@ and remembers the decisions you want to make permanent.
 - **Default for unmatched links** — optionally route everything that matches no rule to a
   chosen profile (a catch-all), instead of always showing the menu.
 - **GTK rules editor** — enable/disable, edit patterns, reorder priority (▲▼), set the
-  default, **⟳ Rescan profiles** to auto-detect browsers, and ⚠ warnings for rules that
-  point at a renamed/missing profile.
+  default, and ⚠ warnings for rules that point at a renamed/missing profile. New browser
+  profiles are auto-added when the picker opens (or manually with **⟳ Rescan profiles**).
 - **Routes** `http`, `https`, and `mailto`.
 
 ## Install
@@ -92,7 +92,7 @@ set `BROWSER_PICKER_INSTALL_BRIDGE=1`. See
 
 Two files in `~/.config/browser-picker/`:
 
-- **`browsers.conf`** — `Label|||command` per line. Auto-fill with *Rescan profiles*.
+- **`browsers.conf`** — `Label|||command` per line. The picker auto-adds newly discovered profiles; you can also use *Rescan profiles* in the editor.
 - **`rules.conf`** — `enabled|||pattern|||label[|||private]` per line (optional 4th field
   `1` opens matching links in a private window). Managed by the editor.
 
@@ -109,7 +109,9 @@ uninstall/revert steps, and troubleshooting.
 shows the menu. Profiles are launched detached via `setsid`.
 
 Profile detection reads Chromium-family `Local State` (`profile.info_cache`) and
-Firefox-family `profiles.ini`.
+Firefox-family `profiles.ini`. It only adds new entries; it does not remove or rename entries
+you edited by hand. Set `BROWSER_PICKER_AUTO_RESCAN=0` if you do not want the picker to touch
+`browsers.conf` automatically.
 
 ## Optional Chromium / omarchy web-app bridge
 

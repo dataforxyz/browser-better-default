@@ -82,7 +82,14 @@ notify() { command -v notify-send >/dev/null 2>&1 && notify-send "Browser Picker
 
 have_recommender() { command -v browser-picker-recommend >/dev/null 2>&1; }
 
+rescan_profiles() {
+  [ "${BROWSER_PICKER_AUTO_RESCAN:-1}" = "0" ] && return 0
+  command -v browser-picker-profiles >/dev/null 2>&1 || return 0
+  browser-picker-profiles rescan --quiet >/dev/null 2>&1 || true
+}
+
 main() {
+  rescan_profiles
   mapfile -t ENTRIES < <(grep -vE '^\s*(#|$)' "$CONF/browsers.conf" 2>/dev/null)
   mapfile -t RULES   < <(grep -vE '^\s*(#|$)' "$RULESFILE"          2>/dev/null)
   local url="$1" r en rest pat lbl rpriv cmd choice target i l smart_out

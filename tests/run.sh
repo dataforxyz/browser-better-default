@@ -22,6 +22,7 @@ echo "== python compile =="
 python3 -m py_compile \
   "$ROOT/bin/browser-picker-rules" \
   "$ROOT/bin/browser-picker-recommend" \
+  "$ROOT/bin/browser-picker-profiles" \
   "$ROOT/bin/browser-picker-host"
 
 echo "== bash unit tests =="
