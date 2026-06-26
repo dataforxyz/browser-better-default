@@ -9,4 +9,4 @@ Terminal=false
 Icon=applications-internet
 Type=Application
 Categories=Network;WebBrowser;
-MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/mailto;x-scheme-handler/about;x-scheme-handler/unknown;text/html;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/mailto;

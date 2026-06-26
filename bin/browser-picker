@@ -51,10 +51,13 @@ matches() {
 }
 
 menu() {  # prompt on $1, options on stdin -> selected line on stdout
-  if command -v omarchy-launch-walker >/dev/null 2>&1; then
-    omarchy-launch-walker --dmenu --width 380 --minheight 1 --maxheight 500 -p "$1" 2>/dev/null
+  local prompt="$1"
+  if [ -n "${BROWSER_PICKER_MENU:-}" ]; then
+    BROWSER_PICKER_PROMPT="$prompt" sh -c "$BROWSER_PICKER_MENU"
+  elif command -v omarchy-launch-walker >/dev/null 2>&1; then
+    omarchy-launch-walker --dmenu --width 380 --minheight 1 --maxheight 500 -p "$prompt" 2>/dev/null
   else
-    walker --dmenu --width 380 -p "$1" 2>/dev/null
+    walker --dmenu --width 380 -p "$prompt" 2>/dev/null
   fi
 }
 
@@ -69,8 +72,8 @@ main() {
   mapfile -t ENTRIES < <(grep -vE '^\s*(#|$)' "$CONF/browsers.conf" 2>/dev/null)
   mapfile -t RULES   < <(grep -vE '^\s*(#|$)' "$RULESFILE"          2>/dev/null)
   local url="$1" r en rest pat lbl rpriv cmd choice target i l smart_out
-  local sug sug_pattern="" sug_label="" sug_priv="0" sug_item=""
-  local -a SMART=()
+  local sug_pattern="" sug_label="" sug_priv="0" sug_item="" _sug_scope=""
+  local -a SMART=() SUG_PATTERNS=() SUG_LABELS=() SUG_PRIVS=() SUG_ITEMS=()
 
   # 1) Smart defaults: first enabled, matching rule wins — skips the menu.
   if [ -n "$url" ]; then
@@ -96,25 +99,28 @@ main() {
     setsid -f browser-picker-rules >/dev/null 2>&1
     return 0
   fi
-  if ! command -v omarchy-launch-walker >/dev/null 2>&1 && ! command -v walker >/dev/null 2>&1; then
-    notify "No menu found. Install 'walker' to use the picker."
-    echo "browser-picker: needs 'walker' or 'omarchy-launch-walker' (https://github.com/abenz1267/walker)" >&2
+  if [ -z "${BROWSER_PICKER_MENU:-}" ] && ! command -v omarchy-launch-walker >/dev/null 2>&1 && ! command -v walker >/dev/null 2>&1; then
+    notify "No menu found. Install 'walker' or set BROWSER_PICKER_MENU."
+    echo "browser-picker: needs 'walker'/'omarchy-launch-walker' or BROWSER_PICKER_MENU (see README.md)" >&2
     return 1
   fi
 
-  # Learned-habit shortcut: if you've picked the same profile for this place a couple of
-  # times, offer a one-click "make default" entry at the top of the menu.
+  # Learned-habit shortcuts: if you've picked the same profile for this place a couple of
+  # times, offer clear one-click defaults. The rule scope is front-loaded so it is visible
+  # even in a narrow menu.
   if [ -n "$url" ] && have_recommender; then
-    sug="$(browser-picker-recommend peek --url "$url" 2>/dev/null)"
-    if [ -n "$sug" ]; then
-      sug_pattern="${sug%%$'\t'*}"; rest="${sug#*$'\t'}"
-      sug_label="${rest%%$'\t'*}"; sug_priv="${rest#*$'\t'}"
+    while IFS=$'\t' read -r sug_pattern sug_label sug_priv _sug_scope; do
+      [ -n "$sug_pattern" ] || continue
       if [ "$sug_priv" = "1" ]; then
-        sug_item="⭐  Make default — open in $sug_label$PRIV_SUFFIX   ($sug_pattern)"
+        sug_item="⭐  $sug_pattern → $sug_label$PRIV_SUFFIX"
       else
-        sug_item="⭐  Make default — open in $sug_label   ($sug_pattern)"
+        sug_item="⭐  $sug_pattern → $sug_label"
       fi
-    fi
+      SUG_PATTERNS+=("$sug_pattern")
+      SUG_LABELS+=("$sug_label")
+      SUG_PRIVS+=("$sug_priv")
+      SUG_ITEMS+=("$sug_item")
+    done < <(browser-picker-recommend suggestions --url "$url" 2>/dev/null)
   fi
 
   # Smart order: profiles you use most (and most for this site) come first.
@@ -126,9 +132,9 @@ main() {
 
   choice="$(
     {
-      # Expected profile first, then the ⭐ make-default shortcut, then the rest.
+      # Expected profile first, then the ⭐ make-default shortcuts, then the rest.
       [ "${#SMART[@]}" -gt 0 ] && printf '%s\n' "${SMART[0]}"
-      [ -n "$sug_item" ] && printf '%s\n' "$sug_item"
+      for l in "${SUG_ITEMS[@]}"; do printf '%s\n' "$l"; done
       for ((i = 1; i < ${#SMART[@]}; i++)); do printf '%s\n' "${SMART[i]}"; done
       # Private-window twins, same smart order.
       for l in "${SMART[@]}"; do printf '%s\n' "$l$PRIV_SUFFIX"; done
@@ -149,8 +155,10 @@ main() {
       return 0 ;;
   esac
 
-  # The "⭐ Make default" shortcut: open in the learned profile AND write the rule.
-  if [ -n "$sug_item" ] && [ "$choice" = "$sug_item" ]; then
+  # A "⭐ Default for ..." shortcut: open in the learned profile AND write the rule.
+  for ((i = 0; i < ${#SUG_ITEMS[@]}; i++)); do
+    [ "$choice" = "${SUG_ITEMS[i]}" ] || continue
+    sug_pattern="${SUG_PATTERNS[i]}"; sug_label="${SUG_LABELS[i]}"; sug_priv="${SUG_PRIVS[i]}"
     cmd="$(resolve "$sug_label")" || return 0
     if [ "$sug_priv" = "1" ]; then
       launch "$cmd $(private_flag "$cmd")" "$@"
@@ -162,7 +170,7 @@ main() {
       notify "Default set: $sug_pattern → $sug_label"
     fi
     return 0
-  fi
+  done
 
   # Private-window twin?  "<label>  🕶 Private"
   if [[ "$choice" == *"$PRIV_SUFFIX" ]]; then

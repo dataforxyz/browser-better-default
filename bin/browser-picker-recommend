@@ -32,6 +32,7 @@ RULES_FILE = os.path.join(CONF, "rules.conf")
 BROWSERS_FILE = os.path.join(CONF, "browsers.conf")
 MAX_EVENTS = 1000
 SEG_CAP = 2  # generalize at most to host + 2 path segments (matches rules editor default_pattern)
+HOST_GENERALIZE_MIN_TOP_SEGMENTS = 3  # broad host defaults need evidence across several areas
 
 
 def threshold():
@@ -126,9 +127,19 @@ def recommend(events, label, host, need, private=False):
         return mine if (mine >= need and mine > opp) else 0
 
     pref = common_prefix([e.get("segs") or [] for e in cluster])[:SEG_CAP]
-    m = dominant(pref)
-    if m:
-        return make_pattern(host, pref), m
+    if pref:
+        m = dominant(pref)
+        if m:
+            return make_pattern(host, pref), m
+    else:
+        # Host-wide rules are powerful. Only suggest one after the profile has won across
+        # several distinct top-level areas on the host, not merely because one old path and
+        # one new path share no prefix.
+        top = {tuple((e.get("segs") or [])[:1]) for e in cluster if e.get("segs")}
+        if len(top) >= HOST_GENERALIZE_MIN_TOP_SEGMENTS:
+            m = dominant(pref)
+            if m:
+                return make_pattern(host, pref), m
     narrow = (cluster[-1].get("segs") or [])[:SEG_CAP]
     if narrow:
         m = dominant(narrow)
@@ -137,20 +148,46 @@ def recommend(events, label, host, need, private=False):
     return None
 
 
-def peek(events, host, segs, threshold_n):
-    """For a link about to open, suggest (pattern, label, private) from prior habits, else None.
+def path_local_recommend(events, label, host, segs, need, private=False):
+    """A current-link-biased recommendation under the same first path segment.
 
-    Needs threshold_n-1 prior picks (so the offer appears on the threshold_n-th open) and the
-    suggested pattern must actually cover the link being opened.
+    This prevents a surprising host-wide default when a user has old picks elsewhere on the
+    same host, then starts repeating a new area. Example: old `example.com/acme/*` picks plus
+    a new `example.com/docs/A` pick should suggest `example.com/docs` for `.../docs/B`, not
+    all of `example.com`.
     """
+    if not host or not segs:
+        return None
+    ident = (label, bool(private))
+    first = segs[:1]
+    cluster = [e for e in events if _ident(e) == ident and _under(host, first, e)]
+    if len(cluster) < need:
+        return None
+    others = [e for e in events if _ident(e) != ident and _under(host, first, e)]
+    if len(cluster) <= len(others):
+        return None
+    pref = common_prefix([e.get("segs") or [] for e in cluster] + [segs])[:SEG_CAP]
+    if not pref:
+        return None
+    return make_pattern(host, pref), len(cluster)
+
+
+def best_recommendation(events, host, segs, threshold_n):
+    """Best (pattern, label, private, count) for a link about to open, or None."""
     if not host:
         return None
     need = max(1, threshold_n - 1)
-    idents, best = [], None
+    idents, best_path, best = [], None, None
     for e in events:
         if e.get("host") == host and _ident(e) not in idents:
             idents.append(_ident(e))
     for label, private in idents:
+        rec = path_local_recommend(events, label, host, segs, need, private)
+        if rec:
+            pattern, count = rec
+            if best_path is None or count > best_path[3]:
+                best_path = (pattern, label, private, count)
+            continue
         rec = recommend(events, label, host, need, private)
         if not rec:
             continue
@@ -159,7 +196,57 @@ def peek(events, host, segs, threshold_n):
             continue
         if best is None or count > best[3]:
             best = (pattern, label, private, count)
-    return (best[0], best[1], best[2]) if best else None
+    return best_path or best
+
+
+def peek(events, host, segs, threshold_n):
+    """For a link about to open, suggest (pattern, label, private) from prior habits, else None.
+
+    Needs threshold_n-1 prior picks (so the offer appears on the threshold_n-th open) and the
+    suggested pattern must actually cover the link being opened. Prefer a narrower pattern
+    under the current path when available; fall back to broad host-level habits only when no
+    current-path habit exists.
+    """
+    chosen = best_recommendation(events, host, segs, threshold_n)
+    return (chosen[0], chosen[1], chosen[2]) if chosen else None
+
+
+def scope_name(pattern, host, segs):
+    pat_segs = pattern.split("/")[1:]
+    if not pat_segs:
+        return "whole site"
+    if pat_segs == segs[:len(pat_segs)] and len(pat_segs) >= len(segs):
+        return "this page"
+    if len(pat_segs) == 1:
+        return "this section"
+    return "this scope"
+
+
+def suggestion_options(events, host, segs, threshold_n):
+    """Return [(pattern, label, private, scope)] for clear one-click default choices.
+
+    The first option is the learned recommendation. Also include explicit alternatives for
+    the whole host and current page so the user can choose broad vs narrow intentionally.
+    """
+    chosen = best_recommendation(events, host, segs, threshold_n)
+    if not chosen:
+        return []
+    pattern, label, private, _count = chosen
+    out, seen = [], set()
+
+    def add(pat):
+        if not pat or pat in seen:
+            return
+        seen.add(pat)
+        out.append((pat, label, private, scope_name(pat, host, segs)))
+
+    add(pattern)
+    if host:
+        add(host)
+    if segs:
+        page = make_pattern(host, segs[:SEG_CAP])
+        add(page)
+    return out[:3]
 
 
 def rank_labels(labels, events, host, segs):
@@ -285,6 +372,14 @@ def main(argv):
         rec = peek(load_store().get("events", []), host, segs, threshold())
         if rec:
             sys.stdout.write("%s\t%s\t%s\n" % (rec[0], rec[1], "1" if rec[2] else "0"))
+        return 0
+    if cmd == "suggestions":
+        url = _opt(argv, "--url")
+        if not url:
+            return 2
+        host, segs = url_parts(url)
+        for pattern, label, private, scope in suggestion_options(load_store().get("events", []), host, segs, threshold()):
+            sys.stdout.write("%s\t%s\t%s\t%s\n" % (pattern, label, "1" if private else "0", scope))
         return 0
     if cmd == "order":
         url = _opt(argv, "--url")

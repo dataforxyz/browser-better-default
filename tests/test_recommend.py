@@ -54,6 +54,13 @@ def peek_after(urls_labels, url, threshold_n=3):
     return bprec.peek(store["events"], host, segs, threshold_n)
 
 
+def suggestions_after(urls_labels, url, threshold_n=3):
+    """One-click default choices for `url` after prior picks."""
+    store = store_from(urls_labels)
+    host, segs = bprec.url_parts(url)
+    return bprec.suggestion_options(store["events"], host, segs, threshold_n)
+
+
 W = "Chromium — Work"
 P = "Chromium — Personal"
 
@@ -74,10 +81,38 @@ check(peek_after([("https://github.com/orgA/repo1", W), ("https://github.com/org
                  "https://github.com/orgB/repo9") is None,
       "offer only when the new link is under the pattern")
 
-# Different orgs, one profile -> generalize to the whole host.
+# Different orgs, one profile -> generalize to the whole host, but only after several
+# top-level areas. Two unrelated areas are not enough for such a broad rule.
 check(peek_after([("https://github.com/orgA/r", W), ("https://github.com/orgB/r", W)],
-                 "https://github.com/orgC/r") == ("github.com", W, False),
-      "host generalization")
+                 "https://github.com/orgC/r") is None,
+      "two top-level areas -> no host-wide offer yet")
+check(peek_after([("https://github.com/orgA/r", W),
+                  ("https://github.com/orgB/r", W),
+                  ("https://github.com/orgC/r", W)],
+                 "https://github.com/orgD/r") == ("github.com", W, False),
+      "three top-level areas -> host generalization")
+
+# If the new link has a repeated current-path habit, prefer that narrower path over a broad
+# host rule caused by older history elsewhere on the same host.
+check(peek_after([("https://example.com/acme/alpha", W),
+                  ("https://example.com/acme/alpha", W),
+                  ("https://example.com/default-browser/A", W)],
+                 "https://example.com/default-browser/B", threshold_n=2)
+      == ("example.com/default-browser", W, False),
+      "current path beats old host-wide history")
+check(peek_after([("https://example.com/acme/alpha", W),
+                  ("https://example.com/acme/alpha", W),
+                  ("https://example.com/default-browser/A", W)],
+                 "https://example.com/whatever", threshold_n=2) is None,
+      "old history plus one new area does not suggest all of host")
+check(suggestions_after([("https://example.com/acme/alpha", W),
+                         ("https://example.com/acme/alpha", W),
+                         ("https://example.com/default-browser/A", W)],
+                        "https://example.com/default-browser/B", threshold_n=2)
+      == [("example.com/default-browser", W, False, "this section"),
+          ("example.com", W, False, "whole site"),
+          ("example.com/default-browser/B", W, False, "this page")],
+      "suggestions show learned section plus whole-site and page choices")
 
 # One stray pick with another profile no longer vetoes a dominant habit.
 check(peek_after([("https://github.com/orgA/repo1", W),

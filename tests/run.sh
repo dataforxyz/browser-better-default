@@ -6,16 +6,23 @@ ROOT="$HERE/.."
 
 if command -v shellcheck >/dev/null 2>&1; then
   echo "== shellcheck =="
-  shellcheck -S warning "$ROOT/bin/browser-picker" "$ROOT/install.sh" "$HERE"/*.sh
+  shellcheck -S warning \
+    "$ROOT/bin/browser-picker" \
+    "$ROOT/install.sh" \
+    "$ROOT/extension/install-bridge.sh" \
+    "$HERE"/*.sh
 else
   echo "== shellcheck (skipped: not installed) =="
 fi
 
 echo "== bash syntax =="
-bash -n "$ROOT/bin/browser-picker"
+bash -n "$ROOT/bin/browser-picker" "$ROOT/install.sh" "$ROOT/extension/install-bridge.sh"
 
 echo "== python compile =="
-python3 -m py_compile "$ROOT/bin/browser-picker-rules" "$ROOT/bin/browser-picker-recommend"
+python3 -m py_compile \
+  "$ROOT/bin/browser-picker-rules" \
+  "$ROOT/bin/browser-picker-recommend" \
+  "$ROOT/bin/browser-picker-host"
 
 echo "== bash unit tests =="
 bash "$HERE/test_matching.sh"

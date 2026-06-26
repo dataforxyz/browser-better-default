@@ -19,7 +19,8 @@ Label|||command
 
 - **Label** — what shows in the menu and what rules refer to, e.g. `Chromium — Work`.
 - **command** — how to launch that profile; may contain quotes. The opened URL(s) are
-  appended automatically.
+  appended automatically. This is a local shell command snippet, so only use entries you
+  trust (do not paste someone else's config blindly).
 
 Examples:
 
@@ -44,7 +45,7 @@ hand (so a bare `Brave` entry survives).
 ## rules.conf
 
 ```
-enabled|||pattern|||label
+enabled|||pattern|||label[|||private]
 ```
 
 - **enabled** — `1` (on) or `0` (off).
@@ -52,6 +53,7 @@ enabled|||pattern|||label
 - **label** — must exactly match a Label in `browsers.conf`. If it doesn't, the editor shows
   a ⚠ and preserves the rule (it won't silently rewrite it to another profile); the picker
   skips the broken rule and falls back to the menu.
+- **private** — optional `1` opens matching links in a private/incognito window.
 
 The **first enabled rule that matches wins**, top to bottom. Use the ▲▼ buttons in the
 editor (or reorder lines) to set priority — put specific rules above broad ones.
@@ -85,6 +87,35 @@ In the editor, the **Unmatched links →** dropdown sets what happens to links n
 1|||*|||Chromium — Personal
 ```
 
+## Menu command
+
+On omarchy, browser-picker uses `omarchy-launch-walker` when available. Otherwise it uses
+`walker --dmenu`. If you prefer another dmenu-style launcher, set `BROWSER_PICKER_MENU` to a
+shell command that reads options on stdin and prints the chosen line on stdout. The prompt is
+available as `$BROWSER_PICKER_PROMPT`:
+
+```sh
+export BROWSER_PICKER_MENU='wofi --dmenu --prompt "$BROWSER_PICKER_PROMPT"'
+# or, for another Wayland launcher:
+export BROWSER_PICKER_MENU='fuzzel --dmenu --prompt "$BROWSER_PICKER_PROMPT> "'
+```
+
+For links launched from `.desktop` files, put the variable somewhere inherited by your user
+session (for example your compositor/session environment), not only in an interactive shell.
+
+## Local recommender settings
+
+The recommender is local/offline and stores recent picks in
+`~/.config/browser-picker/history.json`. It starts suggesting a default on the first repeat
+by default. Tune that with `~/.config/browser-picker/settings.conf`:
+
+```ini
+threshold=3
+```
+
+`BROWSER_PICKER_SUGGEST_THRESHOLD=3` also works for environments that pass it to the picker.
+The minimum effective threshold is `2`.
+
 ## Default link handler
 
 `install.sh` registers browser-picker for `http`, `https`, and `mailto` via `xdg-settings`
@@ -95,13 +126,40 @@ xdg-settings get default-web-browser
 xdg-mime query default x-scheme-handler/https
 # revert to a single browser:
 xdg-settings set default-web-browser chromium.desktop
+xdg-mime default chromium.desktop x-scheme-handler/http x-scheme-handler/https
 ```
+
+## Uninstall / revert
+
+There is no system-wide install. To remove browser-picker:
+
+```sh
+# choose your real browser .desktop file first
+xdg-settings set default-web-browser chromium.desktop
+xdg-mime default chromium.desktop x-scheme-handler/http x-scheme-handler/https
+xdg-mime default org.gnome.Evolution.desktop x-scheme-handler/mailto  # optional mailto example
+
+rm -f ~/.local/bin/browser-picker \
+      ~/.local/bin/browser-picker-rules \
+      ~/.local/bin/browser-picker-recommend \
+      ~/.local/bin/browser-picker-host \
+      ~/.local/share/applications/browser-picker.desktop \
+      ~/.local/share/applications/browser-picker-rules.desktop
+
+# optional: remove your rules/history too
+rm -rf ~/.config/browser-picker ~/.cache/browser-picker
+```
+
+If you installed the optional bridge, also remove the extension path from any
+`~/.config/*-flags.conf` `--load-extension=` entries and delete
+`NativeMessagingHosts/com.dataforxyz.browser_picker.json` from Chromium-family config dirs
+where the bridge installer wrote it.
 
 ## Troubleshooting
 
-- **Nothing happens on click** — you need a `dmenu`-capable menu. Install
-  [walker](https://github.com/abenz1267/walker); the picker also notifies via `notify-send`
-  if it can't find one.
+- **Nothing happens on click** — install [walker](https://github.com/abenz1267/walker) or
+  set `BROWSER_PICKER_MENU` to another dmenu-style command. The picker also notifies via
+  `notify-send` if it can't find a menu.
 - **A rule never fires** — a broader rule above it is winning. Reorder with ▲▼. Remember the
   catch-all `*` must stay last.
 - **Firefox/Zen opens the wrong profile** — those browsers serve one profile at a time; if a
