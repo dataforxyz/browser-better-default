@@ -92,11 +92,11 @@ In the editor, the **Unmatched links →** dropdown sets what happens to links n
 
 ## Menu command
 
-On Omarchy, browser-picker uses the native `omarchy-menu-select` picker through the
+On Omarchy Quattro, browser-picker uses the native `omarchy-menu-select` picker through the
 `browser-picker-menu-select` adapter installed in `~/.local/bin`. The adapter gives the menu
 720px width and 600px maximum height by default; set `BROWSER_PICKER_MENU_WIDTH` or
 `BROWSER_PICKER_MENU_MAXHEIGHT` to change them. On other desktops, browser-picker uses
-`omarchy-launch-walker` or `walker --dmenu` when available. To use another dmenu-style
+`omarchy-launch-walker` or `walker --dmenu` when available. Walker is not needed on Quattro. To use another dmenu-style
 launcher, set `BROWSER_PICKER_MENU` to a shell command that reads options on stdin and prints
 the chosen line on stdout. The prompt is available as `$BROWSER_PICKER_PROMPT`:
 
@@ -164,7 +164,8 @@ where the bridge installer wrote it.
 
 ## Troubleshooting
 
-- **Nothing happens on click** — install [walker](https://github.com/abenz1267/walker) or
+- **Nothing happens on click** — on Omarchy Quattro, reinstall browser-picker so the native-menu
+  adapter is linked into `~/.local/bin`. On other desktops, install [walker](https://github.com/abenz1267/walker) or
   set `BROWSER_PICKER_MENU` to another dmenu-style command. The picker also notifies via
   `notify-send` if it can't find a menu.
 - **A rule never fires** — a broader rule above it is winning. Reorder with ▲▼. Remember the

@@ -4,8 +4,8 @@ A Linux default-browser replacement that pops up a **menu of every browser + pro
 each time you open a link — with **smart-default rules** so chosen sites skip the menu and
 open directly in the right profile.
 
-Built for [omarchy](https://omarchy.org) / Hyprland with its native menu, and supports
-[Walker](https://github.com/abenz1267/walker) and other `dmenu`-style menus.
+Built for [Omarchy Quattro](https://omarchy.org) / Hyprland with its native menu, and supports
+[Walker](https://github.com/abenz1267/walker) and other `dmenu`-style menus on other desktops.
 
 ![CI](https://github.com/dataforxyz/browser-better-default/actions/workflows/ci.yml/badge.svg)
 ![wayland](https://img.shields.io/badge/wayland-friendly-blue)
@@ -26,7 +26,7 @@ and remembers the decisions you want to make permanent.
 
 ## Features
 
-- **Picker on every link** — choose browser + profile from a menu (Omarchy’s native menu, Walker, or your `BROWSER_PICKER_MENU`); the prompt shows the target URL (without query/fragment noise).
+- **Picker on every link** — choose browser + profile from a menu (Omarchy Quattro’s native menu, Walker, or your `BROWSER_PICKER_MENU`); the prompt shows the target URL (without query/fragment noise).
 - **Smart defaults** — rules like `github.com/myorg/myrepo → Chromium (Work)` open
   directly, no menu. Plain text matches on **path/host boundaries** (covers a URL *and its
   child paths*, but `…/repo` won't match `…/repo-staging`); `*`/`?` = glob; `regex:` prefix
@@ -53,6 +53,11 @@ cd browser-better-default
 ./install.sh
 ```
 
+The `main` branch targets current Omarchy Quattro. The previous pre-Quattro version is
+preserved as [`archive/pre-quattro-20261115`](https://github.com/dataforxyz/browser-better-default/tree/archive/pre-quattro-20261115).
+To check out that historical version instead, run `git switch --detach archive/pre-quattro-20261115`
+after cloning. It is an archive, not a maintained compatibility branch.
+
 `install.sh` symlinks the executables into `~/.local/bin`, installs the `.desktop`
 launchers, seeds `~/.config/browser-picker/` from the examples (without overwriting an
 existing config), and registers the picker as the default web/link handler for `http`,
@@ -77,8 +82,9 @@ set `BROWSER_PICKER_INSTALL_BRIDGE=1`. See
 
 ### Requirements
 
-- [walker](https://github.com/abenz1267/walker) preferred (uses omarchy's
-  `omarchy-launch-walker` if present, else `walker --dmenu`). Other menus can be wired with
+- On Omarchy Quattro, the included shell provides `omarchy-menu-select`; the installer
+  adds a small adapter and gives it a 720px width and 600px maximum height by default.
+  Walker is the fallback on other desktops. Other menus can be wired with
   `BROWSER_PICKER_MENU`, for example:
 
   ```sh
