@@ -1,6 +1,6 @@
 [Desktop Entry]
 Version=1.0
-Name=Browser Picker Rules
+Name=Browser Picker Rules Editor
 Comment=Manage which links open in which browser/profile automatically
 Exec=@BINDIR@/browser-picker-rules
 Icon=preferences-system

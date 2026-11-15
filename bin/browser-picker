@@ -115,14 +115,18 @@ main() {
   fi
 
   # 2) Show the picker.
+  if [ -z "${BROWSER_PICKER_MENU:-}" ] && command -v omarchy-menu-select >/dev/null 2>&1; then
+    export BROWSER_PICKER_MENU="${BROWSER_PICKER_MENU_SELECT:-browser-picker-menu-select}"
+  fi
+
   if [ "${#ENTRIES[@]}" -eq 0 ]; then
     notify "No browsers configured — opening setup."
     setsid -f browser-picker-rules >/dev/null 2>&1
     return 0
   fi
-  if [ -z "${BROWSER_PICKER_MENU:-}" ] && ! command -v omarchy-launch-walker >/dev/null 2>&1 && ! command -v walker >/dev/null 2>&1; then
-    notify "No menu found. Install 'walker' or set BROWSER_PICKER_MENU."
-    echo "browser-picker: needs 'walker'/'omarchy-launch-walker' or BROWSER_PICKER_MENU (see README.md)" >&2
+  if [ -z "${BROWSER_PICKER_MENU:-}" ] && ! command -v omarchy-launch-walker >/dev/null 2>&1 && ! command -v walker >/dev/null 2>&1 && ! command -v omarchy-menu-select >/dev/null 2>&1; then
+    notify "No menu found. Install Walker or configure BROWSER_PICKER_MENU."
+    echo "browser-picker: needs Walker, omarchy-menu-select, or BROWSER_PICKER_MENU (see README.md)" >&2
     return 1
   fi
 

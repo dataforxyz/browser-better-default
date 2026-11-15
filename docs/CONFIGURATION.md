@@ -92,10 +92,13 @@ In the editor, the **Unmatched links →** dropdown sets what happens to links n
 
 ## Menu command
 
-On omarchy, browser-picker uses `omarchy-launch-walker` when available. Otherwise it uses
-`walker --dmenu`. If you prefer another dmenu-style launcher, set `BROWSER_PICKER_MENU` to a
-shell command that reads options on stdin and prints the chosen line on stdout. The prompt is
-available as `$BROWSER_PICKER_PROMPT`:
+On Omarchy, browser-picker uses the native `omarchy-menu-select` picker through the
+`browser-picker-menu-select` adapter installed in `~/.local/bin`. The adapter gives the menu
+720px width and 600px maximum height by default; set `BROWSER_PICKER_MENU_WIDTH` or
+`BROWSER_PICKER_MENU_MAXHEIGHT` to change them. On other desktops, browser-picker uses
+`omarchy-launch-walker` or `walker --dmenu` when available. To use another dmenu-style
+launcher, set `BROWSER_PICKER_MENU` to a shell command that reads options on stdin and prints
+the chosen line on stdout. The prompt is available as `$BROWSER_PICKER_PROMPT`:
 
 ```sh
 export BROWSER_PICKER_MENU='wofi --dmenu --prompt "$BROWSER_PICKER_PROMPT"'

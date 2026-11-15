@@ -59,6 +59,7 @@ ln -sf "$REPO/bin/browser-picker"           "$BIN/browser-picker"
 ln -sf "$REPO/bin/browser-picker-rules"     "$BIN/browser-picker-rules"
 ln -sf "$REPO/bin/browser-picker-recommend" "$BIN/browser-picker-recommend"
 ln -sf "$REPO/bin/browser-picker-profiles"  "$BIN/browser-picker-profiles"
+ln -sf "$REPO/bin/browser-picker-menu-select" "$BIN/browser-picker-menu-select"
 
 # Desktop entries: expand @BINDIR@ to the absolute bin path (xdg needs an abs Exec).
 for d in browser-picker browser-picker-rules; do
@@ -78,11 +79,11 @@ xdg-mime default browser-picker.desktop \
 
 cat <<EOF
 Installed browser-picker.
-  • Manage rules:   browser-picker-rules   (or "Browser Picker Rules" in your launcher)
+  • Manage rules:   browser-picker-rules   (or "Browser Picker Rules Editor" in your launcher)
   • Detect profiles: open the rules app and click "⟳ Rescan profiles"
   • Config lives in: $CFG
-Click any link to see the picker. Requires walker (preferred) or another menu configured
-with BROWSER_PICKER_MENU.
+Click any link to see the picker. Omarchy uses its native menu; elsewhere install Walker
+or configure another menu with BROWSER_PICKER_MENU.
 
 Optional: Chromium/omarchy web-app windows bypass the normal system link handler. To route
 links opened from those app windows through browser-picker too, run:

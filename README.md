@@ -4,8 +4,8 @@ A Linux default-browser replacement that pops up a **menu of every browser + pro
 each time you open a link — with **smart-default rules** so chosen sites skip the menu and
 open directly in the right profile.
 
-Built for [omarchy](https://omarchy.org) / Hyprland + [walker](https://github.com/abenz1267/walker),
-with a `BROWSER_PICKER_MENU` escape hatch for other `dmenu`-style menus.
+Built for [omarchy](https://omarchy.org) / Hyprland with its native menu, and supports
+[Walker](https://github.com/abenz1267/walker) and other `dmenu`-style menus.
 
 ![CI](https://github.com/dataforxyz/browser-better-default/actions/workflows/ci.yml/badge.svg)
 ![wayland](https://img.shields.io/badge/wayland-friendly-blue)
@@ -26,7 +26,7 @@ and remembers the decisions you want to make permanent.
 
 ## Features
 
-- **Picker on every link** — choose browser + profile from a menu (`walker --dmenu` by default, or your `BROWSER_PICKER_MENU`); the prompt shows the target URL (without query/fragment noise).
+- **Picker on every link** — choose browser + profile from a menu (Omarchy’s native menu, Walker, or your `BROWSER_PICKER_MENU`); the prompt shows the target URL (without query/fragment noise).
 - **Smart defaults** — rules like `github.com/myorg/myrepo → Chromium (Work)` open
   directly, no menu. Plain text matches on **path/host boundaries** (covers a URL *and its
   child paths*, but `…/repo` won't match `…/repo-staging`); `*`/`?` = glob; `regex:` prefix
