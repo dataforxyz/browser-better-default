@@ -80,21 +80,53 @@ entry_private_labels() { local e; for e in "${ENTRIES[@]}"; do printf '%s\n' "${
 
 notify() { command -v notify-send >/dev/null 2>&1 && notify-send "Browser Picker" "$1"; }
 
-have_recommender() { command -v browser-picker-recommend >/dev/null 2>&1; }
+helper_bin() {  # name -> sibling next to this script, or executable on PATH
+  local name="$1" here
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  [ -x "$here/$name" ] && { printf '%s' "$here/$name"; return 0; }
+  if command -v "$name" >/dev/null 2>&1; then
+    command -v "$name"
+    return 0
+  fi
+  return 1
+}
+
+open_remaining_urls() {  # remaining URLs after $1 was handled by a single-URL local app
+  local extra
+  for extra in "$@"; do
+    ( main "$extra" )
+  done
+}
+
+have_recommender() { helper_bin browser-picker-recommend >/dev/null 2>&1; }
+
+is_matched_app() {
+  local label="$1" a
+  for a in "${APP_LABELS[@]}"; do
+    [ "$a" = "$label" ] && return 0
+  done
+  return 1
+}
 
 rescan_profiles() {
+  local prof_bin
   [ "${BROWSER_PICKER_AUTO_RESCAN:-1}" = "0" ] && return 0
-  command -v browser-picker-profiles >/dev/null 2>&1 || return 0
-  browser-picker-profiles rescan --quiet >/dev/null 2>&1 || true
+  prof_bin="$(helper_bin browser-picker-profiles)" || return 0
+  "$prof_bin" rescan --quiet >/dev/null 2>&1 || true
 }
 
 main() {
   rescan_profiles
   mapfile -t ENTRIES < <(grep -vE '^\s*(#|$)' "$CONF/browsers.conf" 2>/dev/null)
   mapfile -t RULES   < <(grep -vE '^\s*(#|$)' "$RULESFILE"          2>/dev/null)
-  local url="$1" r en rest pat lbl rpriv cmd choice target i l smart_out
+  local url="${1:-}" r en rest pat lbl rpriv cmd choice target i l smart_out
+  local apps_bin="" rec_bin="" app_rc=0 app_lbl="" app_kind="" _app_target=""
   local sug_pattern="" sug_label="" sug_priv="0" sug_item="" _sug_scope=""
   local -a SMART=() SUG_PATTERNS=() SUG_LABELS=() SUG_PRIVS=() SUG_ITEMS=()
+  local -a APP_LABELS=() NATIVE_APP_LABELS=() WEBAPP_LABELS=() APP_ORDER_ARGS=()
+
+  apps_bin="$(helper_bin browser-picker-apps 2>/dev/null || true)"
+  rec_bin="$(helper_bin browser-picker-recommend 2>/dev/null || true)"
 
   # 1) Smart defaults: first enabled, matching rule wins — skips the menu.
   if [ -n "$url" ]; then
@@ -110,7 +142,18 @@ main() {
         if [ "$rpriv" = "1" ]; then launch "$cmd $(private_flag "$cmd")" "$@"; else launch "$cmd" "$@"; fi
         return 0
       fi
-      break   # rule names an unknown label -> fall through to the picker
+      if [ "$rpriv" != "1" ] && [ -n "$apps_bin" ]; then
+        app_rc=0
+        "$apps_bin" launch --label "$lbl" --url "$url" >/dev/null 2>&1 || app_rc=$?
+        if [ "$app_rc" -eq 0 ]; then
+          [ "$#" -gt 1 ] && { shift; open_remaining_urls "$@"; }
+          return 0
+        elif [ "$app_rc" -eq 2 ]; then
+          # Known (or disabled) local app, but this specific URL isn't openable in it -> try later rules / picker.
+          continue
+        fi
+      fi
+      break   # rule names an unknown label (or private rule on non-browser) -> fall through to the picker
     done
   fi
 
@@ -119,7 +162,22 @@ main() {
     export BROWSER_PICKER_MENU="${BROWSER_PICKER_MENU_SELECT:-browser-picker-menu-select}"
   fi
 
-  if [ "${#ENTRIES[@]}" -eq 0 ]; then
+  # Local desktop apps & web apps that match this URL (e.g. T3 Code, Spotify, Zoom, Omarchy web apps).
+  if [ -n "$url" ] && [ -n "$apps_bin" ]; then
+    while IFS=$'\t' read -r app_lbl app_kind _app_target; do
+      [ -n "$app_lbl" ] || continue
+      APP_LABELS+=("$app_lbl")
+      if [ "$app_kind" = "webapp" ]; then
+        WEBAPP_LABELS+=("$app_lbl")
+        APP_ORDER_ARGS+=(--webapp "$app_lbl")
+      else
+        NATIVE_APP_LABELS+=("$app_lbl")
+        APP_ORDER_ARGS+=(--app "$app_lbl")
+      fi
+    done < <("$apps_bin" match --url "$url" 2>/dev/null)
+  fi
+
+  if [ "${#ENTRIES[@]}" -eq 0 ] && [ "${#APP_LABELS[@]}" -eq 0 ]; then
     notify "No browsers configured — opening setup."
     setsid -f browser-picker-rules >/dev/null 2>&1
     return 0
@@ -130,12 +188,20 @@ main() {
     return 1
   fi
 
-  # Learned-habit shortcuts: if you've picked the same profile for this place a couple of
+  # Learned-habit shortcuts: if you've picked the same profile or app for this place a couple of
   # times, offer clear one-click defaults. The rule scope is front-loaded so it is visible
   # even in a narrow menu.
-  if [ -n "$url" ] && have_recommender; then
+  if [ -n "$url" ] && [ -n "$rec_bin" ]; then
     while IFS=$'\t' read -r sug_pattern sug_label sug_priv _sug_scope; do
       [ -n "$sug_pattern" ] || continue
+      if resolve "$sug_label" >/dev/null 2>&1; then
+        :
+      elif is_matched_app "$sug_label"; then
+        # Never turn a private habit into a non-private local-app shortcut.
+        [ "$sug_priv" = "1" ] && continue
+      else
+        continue
+      fi
       if [ "$sug_priv" = "1" ]; then
         sug_item="⭐  $sug_pattern → $sug_label$PRIV_SUFFIX"
       else
@@ -145,24 +211,35 @@ main() {
       SUG_LABELS+=("$sug_label")
       SUG_PRIVS+=("$sug_priv")
       SUG_ITEMS+=("$sug_item")
-    done < <(browser-picker-recommend suggestions --url "$url" 2>/dev/null)
+    done < <("$rec_bin" suggestions --url "$url" 2>/dev/null)
   fi
 
-  # Smart order: profiles you use most (and most for this site) come first.
-  if [ -n "$url" ] && have_recommender; then
-    smart_out="$(browser-picker-recommend order --url "$url" 2>/dev/null)"
+  # Smart order: matched local apps and profiles you use most (and most for this site) come first.
+  if [ -n "$url" ] && [ -n "$rec_bin" ]; then
+    smart_out="$("$rec_bin" order --url "$url" "${APP_ORDER_ARGS[@]}" 2>/dev/null)"
     [ -n "$smart_out" ] && mapfile -t SMART <<< "$smart_out"
   fi
-  [ "${#SMART[@]}" -eq 0 ] && mapfile -t SMART < <(entry_labels)
+  if [ "${#SMART[@]}" -eq 0 ]; then
+    for l in "${NATIVE_APP_LABELS[@]}"; do SMART+=("$l"); done
+    while IFS= read -r l; do
+      [ -n "$l" ] && SMART+=("$l")
+    done < <(entry_labels)
+    for l in "${WEBAPP_LABELS[@]}"; do SMART+=("$l"); done
+  fi
 
   choice="$(
     {
-      # Expected profile first, then the ⭐ make-default shortcuts, then the rest.
+      # Expected target first, then the ⭐ make-default shortcuts, then the rest.
       [ "${#SMART[@]}" -gt 0 ] && printf '%s\n' "${SMART[0]}"
       for l in "${SUG_ITEMS[@]}"; do printf '%s\n' "$l"; done
       for ((i = 1; i < ${#SMART[@]}; i++)); do printf '%s\n' "${SMART[i]}"; done
-      # Private-window twins, same smart order.
-      for l in "${SMART[@]}"; do printf '%s\n' "$l$PRIV_SUFFIX"; done
+      # Private-window twins (browsers only — local apps don't take incognito flags).
+      for l in "${SMART[@]}"; do
+        if is_matched_app "$l" && ! resolve "$l" >/dev/null 2>&1; then
+          continue
+        fi
+        printf '%s\n' "$l$PRIV_SUFFIX"
+      done
       # Manual options at the end (smart ordering makes them rarely needed).
       [ -n "$url" ] && printf '%s\n' "$REMEMBER_LABEL"
       printf '%s\n' "$EDIT_LABEL"
@@ -180,19 +257,28 @@ main() {
       return 0 ;;
   esac
 
-  # A "⭐ Default for ..." shortcut: open in the learned profile AND write the rule.
+  # A "⭐ Default for ..." shortcut: open in the learned profile/app AND write the rule.
   for ((i = 0; i < ${#SUG_ITEMS[@]}; i++)); do
     [ "$choice" = "${SUG_ITEMS[i]}" ] || continue
     sug_pattern="${SUG_PATTERNS[i]}"; sug_label="${SUG_LABELS[i]}"; sug_priv="${SUG_PRIVS[i]}"
-    cmd="$(resolve "$sug_label")" || return 0
-    if [ "$sug_priv" = "1" ]; then
-      launch "$cmd $(private_flag "$cmd")" "$@"
-      browser-picker-recommend addrule --pattern "$sug_pattern" --label "$sug_label" --private 1 >/dev/null 2>&1
-      notify "Default set: $sug_pattern → $sug_label (private)"
-    else
-      launch "$cmd" "$@"
-      browser-picker-recommend addrule --pattern "$sug_pattern" --label "$sug_label" >/dev/null 2>&1
-      notify "Default set: $sug_pattern → $sug_label"
+    if cmd="$(resolve "$sug_label")"; then
+      if [ "$sug_priv" = "1" ]; then
+        launch "$cmd $(private_flag "$cmd")" "$@"
+        [ -n "$rec_bin" ] && "$rec_bin" addrule --pattern "$sug_pattern" --label "$sug_label" --private 1 >/dev/null 2>&1
+        notify "Default set: $sug_pattern → $sug_label (private)"
+      else
+        launch "$cmd" "$@"
+        [ -n "$rec_bin" ] && "$rec_bin" addrule --pattern "$sug_pattern" --label "$sug_label" >/dev/null 2>&1
+        notify "Default set: $sug_pattern → $sug_label"
+      fi
+    elif is_matched_app "$sug_label" && [ -n "$apps_bin" ]; then
+      if "$apps_bin" launch --label "$sug_label" --url "$url" >/dev/null 2>&1; then
+        [ -n "$rec_bin" ] && "$rec_bin" addrule --pattern "$sug_pattern" --label "$sug_label" >/dev/null 2>&1
+        notify "Default set: $sug_pattern → $sug_label"
+        [ "$#" -gt 1 ] && { shift; open_remaining_urls "$@"; }
+      else
+        notify "Could not open link in $sug_label."
+      fi
     fi
     return 0
   done
@@ -203,8 +289,22 @@ main() {
     cmd="$(resolve "$target")" || return 0
     launch "$cmd $(private_flag "$cmd")" "$@"
     # Learn the private habit too (so a private default can be offered).
-    [ -n "$url" ] && have_recommender && \
-      browser-picker-recommend record --url "$url" --label "$target" --private 1 >/dev/null 2>&1
+    [ -n "$url" ] && [ -n "$rec_bin" ] && \
+      "$rec_bin" record --url "$url" --label "$target" --private 1 >/dev/null 2>&1
+    return 0
+  fi
+
+  # Matched local desktop app or web app?
+  if is_matched_app "$choice" && ! resolve "$choice" >/dev/null 2>&1; then
+    if [ -n "$apps_bin" ]; then
+      if "$apps_bin" launch --label "$choice" --url "$url" >/dev/null 2>&1; then
+        [ -n "$url" ] && [ -n "$rec_bin" ] && \
+          "$rec_bin" record --url "$url" --label "$choice" >/dev/null 2>&1
+        [ "$#" -gt 1 ] && { shift; open_remaining_urls "$@"; }
+      else
+        notify "Could not open link in $choice."
+      fi
+    fi
     return 0
   fi
 
@@ -212,8 +312,8 @@ main() {
   launch "$cmd" "$@"
 
   # Quietly learn this regular-window pick so the picker can offer a default once you repeat it.
-  [ -n "$url" ] && have_recommender && \
-    browser-picker-recommend record --url "$url" --label "$choice" >/dev/null 2>&1
+  [ -n "$url" ] && [ -n "$rec_bin" ] && \
+    "$rec_bin" record --url "$url" --label "$choice" >/dev/null 2>&1
 }
 
 # Run main only when executed directly; sourcing (e.g. tests) just loads the functions.

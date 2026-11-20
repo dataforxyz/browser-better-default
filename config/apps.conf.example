@@ -1,0 +1,22 @@
+# Custom local app URL handlers (optional; supplements auto-discovered desktop apps & web apps).
+# Format: Label|||pattern|||command
+#   Label   : name shown in the picker and referenced by rules.conf
+#   pattern : boundary-aware plain text, glob */?, or regex:RE (Python regex syntax)
+#   command : how to open matching URLs:
+#               - direct argv command (no outer shell); use {url} where the URL goes (if omitted,
+#                 appended last). Do not place {url} inside a `sh -c '...'` script string — pass
+#                 it as a positional argument instead (e.g. `sh -c 'mycmd "$1"' _ {url}`).
+#               - "uri:<template>" rewrites the URL to a non-http(s) URI scheme and dispatches to
+#                 its installed XDG handler; placeholders: {url}, {host}, {path}, {path_no_slash},
+#                 {query}, {query_part}, {fragment}, {fragment_part}, and {1}..{9} for regex groups
+#               - "disabled" hides an auto-discovered app with the same Label (use "*" for always)
+#
+# Built-in auto-discovered desktop apps (when installed):
+#   T3 Code, Spotify, Zoom, Slack, Telegram, Discord, Linear, Notion, Figma, Steam, Signal, Matrix
+# Installed Omarchy/Chromium web apps (.desktop files) are also auto-discovered.
+#
+# Examples (commented out):
+# Element — Web App|||app.element.io|||omarchy-launch-webapp {url} --profile-directory="Profile 3"
+# Basecamp — Web App|||3.basecamp.com|||omarchy-launch-webapp {url} --profile-directory="Profile 3"
+# My Local App|||regex:^https://app\.example\.com/items/([^/?#]+)|||uri:myapp://item/{1}
+# GitHub — Web App|||*|||disabled

@@ -1,11 +1,12 @@
 # Configuration
 
-browser-picker reads two plain-text files on **every** link click (no daemon, no restart):
+browser-picker reads plain-text config files on **every** link click (no daemon, no restart):
 
 | File | Purpose |
 |------|---------|
 | `~/.config/browser-picker/browsers.conf` | the browser + profile entries offered in the menu |
-| `~/.config/browser-picker/rules.conf`    | smart-default rules that open matching links directly |
+| `~/.config/browser-picker/rules.conf`    | smart-default rules that open matching links directly (in a browser profile or local app) |
+| `~/.config/browser-picker/apps.conf`     | optional custom local app web-URL handlers and overrides |
 
 Both ignore blank lines and lines starting with `#`. Fields are separated by `|||`.
 You normally manage these through the **Browser Picker Rules** app (`browser-picker-rules`),
@@ -84,11 +85,57 @@ In the editor, the **Unmatched links →** dropdown sets what happens to links n
 ### Example rules.conf
 
 ```
+1|||app.t3.codes|||T3 Code
 1|||github.com/acme|||Chromium — Work
 1|||regex:^https://(mail|cal)\.google\.com/|||Chromium — Personal
 0|||figma.com|||Chromium — Personal
 1|||*|||Chromium — Personal
 ```
+
+If a rule targets a local app (such as `T3 Code`) and a URL matches the pattern but is not a route that app can open (for example `https://app.t3.codes/settings`), browser-picker skips that rule and continues to later rules or the picker.
+
+## Local apps & web apps (`apps.conf`)
+
+Without any configuration, `browser-picker-apps` automatically discovers:
+
+- **Installed native desktop apps** that register `x-scheme-handler/*` in XDG `.desktop` files, mapping their web URLs to deep links:
+  - **T3 Code** (`app.t3.codes/threads/<env>/<thread>`, `app.t3.codes/new`, prompt links → `t3code://…`)
+  - **Spotify** (`open.spotify.com` → `spotify:…`)
+  - **Zoom** (`*.zoom.us/j/…`, `/w/…`, `/s/…`, `/wc/join/…` → `zoommtg://…`)
+  - **Slack** (`app.slack.com/client/…`, `*.slack.com/archives/…` → `slack://…`)
+  - **Telegram** (`t.me/…` → `tg://…`)
+  - **Discord** (`discord.com/channels/…`, `discord.gg/…` → `discord://…`)
+  - **Linear**, **Notion**, **Figma**, **Microsoft Teams**, **Steam**, **Signal**, **Matrix** (`matrix.to`)
+- **Installed Omarchy / Chromium web apps** (`.desktop` entries launching `omarchy-launch-webapp <url> …` or Chromium-family `--app=<url>`), shown as `<Name> — Web App` only when a link matches that app's host. (Chromium `--app-id=` shortcuts do not store URLs in their `.desktop` files; add those in `apps.conf` if needed.)
+
+To inspect what is detected on your machine:
+
+```sh
+browser-picker-apps list --detail
+```
+
+You can add custom local apps, `uri:` scheme rewrites, or hide an auto-discovered app in `~/.config/browser-picker/apps.conf`:
+
+```
+Label|||pattern|||command
+```
+
+- **pattern** uses boundary-aware plain text, `*`/`?` glob, or `regex:RE` (Python regex syntax in `apps.conf`, versus Bash extended regex in `rules.conf`). Reusing an auto-discovered app's `Label` with additional patterns augments it for those URLs (and overrides it on matching URLs).
+- **command** is tokenized directly into `argv` and launched without an outer shell:
+  - `{url}` (and `{host}`, `{path}`, `{path_no_slash}`, `{query}`, `{query_part}`, `{fragment}`, `{fragment_part}`, `{1}`…`{9}` for `regex:` groups) are substituted into argument values; if no placeholder is used, the URL is appended as the last argument. Avoid interpolating placeholders inside `sh -c` / `bash -c` script arguments (those are rejected); if you need a shell wrapper, pass `{url}` as a positional argument (`sh -c 'mycmd "$1"' _ {url}`).
+  - Prefix with `uri:` to rewrite to a non-`http(s)` URI scheme and dispatch to its installed XDG handler (e.g. `uri:myapp://item/{1}`).
+  - Use `disabled` as the command to hide an auto-discovered app with the same `Label` (e.g. `GitHub — Web App|||*|||disabled`).
+
+Examples:
+
+```
+mpv|||youtube.com/watch|||mpv {url}
+Element — Web App|||app.element.io|||omarchy-launch-webapp {url} --profile-directory="Profile 3"
+My App|||regex:^https://app\.example\.com/items/([^/?#]+)|||uri:myapp://item/{1}
+GitHub — Web App|||*|||disabled
+```
+
+To disable automatic local app or web-app discovery, set `apps=0` or `webapps=0` in `~/.config/browser-picker/settings.conf` (or export `BROWSER_PICKER_APPS=0` / `BROWSER_PICKER_WEBAPPS=0`).
 
 ## Menu command
 
@@ -146,9 +193,11 @@ xdg-mime default chromium.desktop x-scheme-handler/http x-scheme-handler/https
 xdg-mime default org.gnome.Evolution.desktop x-scheme-handler/mailto  # optional mailto example
 
 rm -f ~/.local/bin/browser-picker \
+      ~/.local/bin/browser-picker-apps \
       ~/.local/bin/browser-picker-rules \
       ~/.local/bin/browser-picker-recommend \
       ~/.local/bin/browser-picker-profiles \
+      ~/.local/bin/browser-picker-menu-select \
       ~/.local/bin/browser-picker-host \
       ~/.local/share/applications/browser-picker.desktop \
       ~/.local/share/applications/browser-picker-rules.desktop

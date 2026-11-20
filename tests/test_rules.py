@@ -59,6 +59,40 @@ check(bpr.load_rules() == [(True, "github.com/org", "A", False),
                            (True, "*", "A", False)],
       "load_rules parses rules incl. private 4th field")
 
+# load_labels combines browsers.conf and discovered local apps without duplicates
+bf = os.path.join(tmp, "browsers.conf")
+with open(bf, "w") as f:
+    f.write("Firefox — default|||firefox -P default\nT3 Code|||custom\n")
+bpr.BROWSERS = bf
+orig_load_apps = bpr.load_app_labels
+try:
+    bpr.load_app_labels = lambda: ["T3 Code", "Spotify", "Figma — Web App"]
+    check(bpr.load_browser_labels() == ["Firefox — default", "T3 Code"], "load_browser_labels reads browsers.conf only")
+    check(
+        bpr.load_labels() == ["Firefox — default", "T3 Code", "Spotify", "Figma — Web App"],
+        "load_labels appends deduplicated local apps",
+    )
+finally:
+    bpr.load_app_labels = orig_load_apps
+
+check(
+    bpr.format_rule_line(True, "app.t3.codes", "T3 Code", True) == "1|||app.t3.codes|||T3 Code|||1",
+    "format_rule_line preserves private flag when present",
+)
+check(
+    bpr.format_rule_line(True, "app.t3.codes", "T3 Code", False) == "1|||app.t3.codes|||T3 Code",
+    "format_rule_line omits 4th field when non-private",
+)
+check(
+    bpr.split_default_rule([(True, "a", "B", False), (True, "*", "C", False)]) == ([(True, "a", "B", False)], "C"),
+    "split_default_rule hoists non-private catch-all",
+)
+check(
+    bpr.split_default_rule([(True, "a", "B", False), (True, "*", "T3 Code", True)])
+    == ([(True, "a", "B", False), (True, "*", "T3 Code", True)], None),
+    "split_default_rule keeps private catch-all in main rows so privacy flag is preserved",
+)
+
 if fails:
     print("FAILED:")
     for m in fails:

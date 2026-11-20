@@ -1,0 +1,1790 @@
+#!/usr/bin/env python3
+"""browser-picker-apps — local desktop app & web app web-URL handlers for browser-picker.
+
+Discovers:
+  1. Installed native desktop apps that register custom URI schemes (x-scheme-handler/*)
+     and maps their well-known web URLs to deep links (e.g. T3 Code, Spotify, Zoom,
+     Slack, Telegram, Discord, Linear, Notion, Figma, Steam, Signal, Matrix).
+  2. Installed Omarchy / Chromium-family web apps (.desktop entries using
+     `omarchy-launch-webapp` or `--app=https://...`).
+  3. User-configured entries in `~/.config/browser-picker/apps.conf`.
+
+Pure Python 3 stdlib, GUI-free, and importable so unit tests run without GTK or a display.
+
+CLI:
+  browser-picker-apps match --url URL
+      Print matching apps as "label\\tkind\\ttarget" (one per line).
+  browser-picker-apps list [--detail]
+      Print all available app labels (or "label\\tkind\\tsource" with --detail).
+  browser-picker-apps can-handle --label LABEL --url URL
+      Exit 0 if LABEL handles URL, 2 if LABEL is a known app that cannot handle URL, 1 if unknown.
+  browser-picker-apps is-app --label LABEL
+      Exit 0 if LABEL is a known app, 1 otherwise.
+  browser-picker-apps launch --label LABEL --url URL [--dry-run]
+      Launch LABEL for URL detached (or print JSON argv with --dry-run).
+      Exit codes: 0 launched, 2 known app cannot handle URL, 1 unknown label / launch failed.
+"""
+import fnmatch
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import urllib.parse
+
+CONF = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "browser-picker"
+)
+APPS_FILE = os.path.join(CONF, "apps.conf")
+SETTINGS_FILE = os.path.join(CONF, "settings.conf")
+
+SELF_DESKTOPS = {"browser-picker.desktop", "omarchy-browser.desktop"}
+BLOCKED_URI_SCHEMES = {"http", "https", "file", "about", "mailto", "javascript", "data"}
+CHROMIUM_WEBAPP_BINS = {
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+    "google-chrome-beta",
+    "google-chrome-unstable",
+    "brave",
+    "brave-browser",
+    "brave-origin",
+    "microsoft-edge",
+    "microsoft-edge-stable",
+    "vivaldi",
+    "vivaldi-stable",
+    "opera",
+    "helium",
+}
+
+UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.IGNORECASE
+)
+SPOTIFY_INTL_RE = re.compile(r"^intl-[a-z]{2}(?:-[a-z0-9]+)?\Z", re.IGNORECASE)
+SLACK_TEAM_RE = re.compile(r"^[TE][A-Z0-9]+\Z")
+SLACK_CHANNEL_RE = re.compile(r"^[CDG][A-Z0-9]+\Z")
+SLACK_TS_RE = re.compile(r"^\d{10}\.\d{6,}\Z")
+SLACK_P_TS_RE = re.compile(r"^p(\d{10})(\d{6,})\Z")
+SHELL_BINS = {"sh", "bash", "dash", "zsh", "ksh", "ash", "fish"}
+TG_USER_RE = re.compile(r"^[A-Za-z0-9_]{3,}\Z")
+TG_RESERVED = {
+    "addemoji",
+    "addlist",
+    "addstickers",
+    "addtheme",
+    "apps",
+    "bg",
+    "blog",
+    "boost",
+    "c",
+    "contact",
+    "faq",
+    "iv",
+    "joinchat",
+    "login",
+    "privacy",
+    "proxy",
+    "s",
+    "setlanguage",
+    "share",
+    "socks",
+    "tos",
+}
+LINEAR_RESERVED = {
+    "about",
+    "blog",
+    "brand",
+    "careers",
+    "changelog",
+    "contact",
+    "customers",
+    "docs",
+    "download",
+    "features",
+    "integrations",
+    "login",
+    "method",
+    "mobile",
+    "now",
+    "pricing",
+    "privacy",
+    "security",
+    "signup",
+    "switch",
+    "terms",
+}
+NOTION_RESERVED = {
+    "about",
+    "blog",
+    "careers",
+    "customers",
+    "desktop",
+    "enterprise",
+    "help",
+    "login",
+    "mobile",
+    "pricing",
+    "privacy",
+    "product",
+    "security",
+    "signup",
+    "templates",
+    "terms",
+}
+FIGMA_PREFIXES = {"file", "design", "board", "proto", "slides", "deck", "make", "jam"}
+T3_RESERVED = {
+    "api",
+    "assets",
+    "auth",
+    "callback",
+    "connect",
+    "docs",
+    "download",
+    "login",
+    "new",
+    "oauth",
+    "pair",
+    "pricing",
+    "privacy",
+    "settings",
+    "sign-in",
+    "sign-up",
+    "terms",
+    "threads",
+}
+FIELD_CODES_DROP = {"%f", "%F", "%i", "%c", "%k", "%d", "%D", "%n", "%N", "%v", "%m"}
+
+
+def _parse_bool(val, default=True):
+    if val is None:
+        return default
+    s = str(val).strip().lower()
+    if s in ("0", "false", "no", "off"):
+        return False
+    if s in ("1", "true", "yes", "on"):
+        return True
+    return default
+
+
+def _read_setting(key):
+    try:
+        with open(SETTINGS_FILE) as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                if k.strip() == key:
+                    return v.strip()
+    except OSError:
+        pass
+    return None
+
+
+def apps_enabled():
+    env = os.environ.get("BROWSER_PICKER_APPS")
+    if env is not None and env != "":
+        return _parse_bool(env, True)
+    val = _read_setting("apps")
+    return _parse_bool(val, True) if val is not None else True
+
+
+def webapps_enabled():
+    env = os.environ.get("BROWSER_PICKER_WEBAPPS")
+    if env is not None and env != "":
+        return _parse_bool(env, True)
+    val = _read_setting("webapps")
+    return _parse_bool(val, True) if val is not None else True
+
+
+def sanitize_label(label):
+    cleaned = re.sub(r"[\r\n\t]+", " ", label or "").replace("|||", " ")
+    return " ".join(cleaned.split())
+
+
+def normalize_host(netloc):
+    host = netloc.split("@")[-1].lower()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[: end + 1] if end != -1 else host
+    if ":" in host:
+        host = host.split(":", 1)[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def parse_http_url(url):
+    if not isinstance(url, str):
+        return None
+    low = url.lower()
+    if not (low.startswith("http://") or low.startswith("https://")):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return None
+    if not parsed.netloc:
+        return None
+    return parsed
+
+
+def url_matches(pattern, url):
+    """Match URL using the same pattern rules as bin/browser-picker's matches().
+
+    Returns:
+      - a re.Match object for regex: patterns on match
+      - True for other matching forms
+      - False / None when not matched
+    """
+    if not pattern:
+        return False
+    if pattern.startswith("regex:"):
+        try:
+            return re.search(pattern[len("regex:") :], url)
+        except re.error:
+            return False
+    if "*" in pattern or "?" in pattern:
+        return fnmatch.fnmatchcase(url, pattern)
+    if pattern.endswith("/"):
+        return pattern in url
+    # Boundary-aware substring match: left is start or [/:], right is end or [/?#:].
+    start = 0
+    plen = len(pattern)
+    ulen = len(url)
+    while True:
+        idx = url.find(pattern, start)
+        if idx == -1:
+            return False
+        left_ok = idx == 0 or url[idx - 1] in "/:"
+        end = idx + plen
+        right_ok = end == ulen or url[end] in "/?#:"
+        if left_ok and right_ok:
+            return True
+        start = idx + 1
+
+
+# --- Desktop entry & XDG scheme discovery ---
+
+
+def desktop_app_dirs():
+    """Return existing XDG applications directories in priority order."""
+    dirs = []
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    dirs.append(os.path.join(data_home, "applications"))
+    data_dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    for d in data_dirs.split(":"):
+        if d:
+            dirs.append(os.path.join(d, "applications"))
+    for extra in (
+        os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
+        "/var/lib/flatpak/exports/share/applications",
+    ):
+        dirs.append(extra)
+    seen = set()
+    out = []
+    for d in dirs:
+        norm = os.path.normpath(d)
+        if norm not in seen and os.path.isdir(norm):
+            seen.add(norm)
+            out.append(norm)
+    return out
+
+
+def _current_desktops():
+    raw = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    return [d.strip().lower() for d in raw.split(":") if d.strip()]
+
+
+def mimeapps_paths():
+    """Return existing mimeapps.list paths in Freedesktop mime-apps-spec priority order."""
+    cfg_home = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    cfg_dirs = [d for d in (os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(":") if d]
+    data_dirs = [d for d in (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":") if d]
+    desktops = _current_desktops()
+
+    def add_dir(out_list, base_dir):
+        for desk in desktops:
+            out_list.append(os.path.join(base_dir, f"{desk}-mimeapps.list"))
+        out_list.append(os.path.join(base_dir, "mimeapps.list"))
+
+    cands = []
+    # 1. User config ($XDG_CONFIG_HOME)
+    add_dir(cands, cfg_home)
+    # 2. System config ($XDG_CONFIG_DIRS)
+    for d in cfg_dirs:
+        add_dir(cands, d)
+    # 3. Legacy user data ($XDG_DATA_HOME/applications)
+    add_dir(cands, os.path.join(data_home, "applications"))
+    # 4. System data ($XDG_DATA_DIRS/applications)
+    for d in data_dirs:
+        add_dir(cands, os.path.join(d, "applications"))
+
+    seen = set()
+    out = []
+    for p in cands:
+        norm = os.path.normpath(p)
+        if norm not in seen and os.path.isfile(norm):
+            seen.add(norm)
+            out.append(norm)
+    return out
+
+
+def unescape_desktop_string(value):
+    """Unescape Freedesktop Desktop Entry string escapes (\\s, \\n, \\t, \\r, \\\\)."""
+    out = []
+    i = 0
+    n = len(value)
+    while i < n:
+        ch = value[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = value[i + 1]
+            if nxt == "s":
+                out.append(" ")
+                i += 2
+                continue
+            if nxt == "n":
+                out.append("\n")
+                i += 2
+                continue
+            if nxt == "t":
+                out.append("\t")
+                i += 2
+                continue
+            if nxt == "r":
+                out.append("\r")
+                i += 2
+                continue
+            if nxt == "\\":
+                out.append("\\")
+                i += 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def parse_exec_tokens(exec_line):
+    """Tokenize a Desktop Entry Exec= line into argv tokens."""
+    if not exec_line:
+        return []
+    raw = unescape_desktop_string(exec_line.strip())
+    try:
+        return shlex.split(raw, posix=True)
+    except ValueError:
+        return raw.split()
+
+
+def _executable_exists(cmd):
+    if not cmd:
+        return False
+    if "/" in cmd:
+        return os.path.isfile(cmd) and os.access(cmd, os.X_OK)
+    return shutil.which(cmd) is not None
+
+
+def _flatpak_named_installation_dir(name):
+    """Look up Path= for [Installation "<name>"] in $FLATPAK_CONFIG_DIR/installations.d/*.conf."""
+    cfg_root = os.environ.get("FLATPAK_CONFIG_DIR") or "/etc/flatpak"
+    conf_dir = os.path.join(cfg_root, "installations.d")
+    if not os.path.isdir(conf_dir):
+        return None
+    header = f'[Installation "{name}"]'
+    try:
+        files = sorted(os.listdir(conf_dir))
+    except OSError:
+        return None
+    for fname in files:
+        if not fname.endswith(".conf"):
+            continue
+        in_sec = False
+        try:
+            with open(os.path.join(conf_dir, fname), encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    s = line.strip()
+                    if not s or s.startswith("#"):
+                        continue
+                    if s.startswith("["):
+                        in_sec = s == header
+                        continue
+                    if in_sec and "=" in s:
+                        k, v = s.split("=", 1)
+                        if k.strip() == "Path":
+                            return v.strip()
+        except OSError:
+            continue
+    return None
+
+
+def _flatpak_app_installed(tokens, flatpak_idx):
+    """Check whether the app ID referenced by `flatpak run ... <app_id>` is installed."""
+    i = flatpak_idx + 2  # skip `flatpak run`
+    app_id = None
+    scope = None  # "user" | "system" | ("installation", name) | None (both)
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "--":
+            if i + 1 < len(tokens):
+                app_id = tokens[i + 1]
+            break
+        if tok in ("--user", "-u"):
+            scope = "user"
+            i += 1
+            continue
+        if tok == "--system":
+            scope = "system"
+            i += 1
+            continue
+        if tok == "--installation" and i + 1 < len(tokens):
+            inst = tokens[i + 1]
+            scope = "system" if inst == "default" else ("installation", inst)
+            i += 2
+            continue
+        if tok.startswith("--installation="):
+            inst = tok.split("=", 1)[1]
+            scope = "system" if inst == "default" else ("installation", inst)
+            i += 1
+            continue
+        if tok.startswith("-"):
+            # Skip known value-taking short/long options without '='.
+            if tok in ("--arch", "--branch", "--command", "--cwd", "--env", "--filesystem", "--talk-name", "--own-name"):
+                i += 2
+            else:
+                i += 1
+            continue
+        app_id = tok
+        break
+    if not app_id:
+        return False
+    # Strip optional /arch/branch suffix (e.g. com.example.App/x86_64/stable).
+    app_id = app_id.split("/", 1)[0]
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    user_base = os.environ.get("FLATPAK_USER_DIR") or os.path.join(data_home, "flatpak")
+    sys_base = os.environ.get("FLATPAK_SYSTEM_DIR") or "/var/lib/flatpak"
+    if scope == "user":
+        bases = [user_base]
+    elif scope == "system":
+        bases = [sys_base]
+    elif isinstance(scope, tuple) and scope[0] == "installation":
+        inst_path = _flatpak_named_installation_dir(scope[1])
+        bases = [inst_path] if inst_path else []
+    else:
+        bases = [user_base, sys_base]
+    return any(os.path.isdir(os.path.join(base, "app", app_id)) for base in bases if base)
+
+
+def _unwrap_exec_index(tokens, check_wrappers=False):
+    """Return the index of the real program in `tokens` after unwrapping env/uwsm prefixes.
+
+    Returns None if tokens is empty or a wrapper executable is missing when check_wrappers=True.
+    Returns -1 for `flatpak run` when flatpak and the target app are available.
+    """
+    if not tokens:
+        return None
+    idx = 0
+    while idx < len(tokens):
+        base = os.path.basename(tokens[idx])
+        if base == "env":
+            if check_wrappers and not _executable_exists(tokens[idx]):
+                return None
+            idx += 1
+            while idx < len(tokens):
+                tok = tokens[idx]
+                if tok == "--":
+                    idx += 1
+                    break
+                if tok in ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"):
+                    idx += 2
+                    continue
+                if "=" in tok or tok.startswith("-"):
+                    idx += 1
+                    continue
+                break
+            continue
+        if base == "uwsm" and idx + 1 < len(tokens) and tokens[idx + 1] == "app":
+            if check_wrappers and not _executable_exists(tokens[idx]):
+                return None
+            idx += 2
+            while idx < len(tokens) and tokens[idx].startswith("-"):
+                if tokens[idx] == "--":
+                    idx += 1
+                    break
+                idx += 1
+            continue
+        if base == "uwsm-app":
+            if check_wrappers and not _executable_exists(tokens[idx]):
+                return None
+            idx += 1
+            while idx < len(tokens) and tokens[idx].startswith("-"):
+                if tokens[idx] == "--":
+                    idx += 1
+                    break
+                idx += 1
+            continue
+        if base == "flatpak" and idx + 1 < len(tokens) and tokens[idx + 1] == "run":
+            if check_wrappers:
+                if not _executable_exists(tokens[idx]):
+                    return None
+                if not _flatpak_app_installed(tokens, idx):
+                    return None
+            return -1
+        break
+    return idx if idx < len(tokens) else None
+
+
+def _env_split_string_start(tokens):
+    """If `tokens` uses `env -S` / `--split-string` (incl. clustered `-iS`), return the first
+    token index from which untrusted URL text must not appear (through any appended tail), else None."""
+    for i, tok in enumerate(tokens):
+        if os.path.basename(tok) != "env":
+            continue
+        j = i + 1
+        while j < len(tokens):
+            t = tokens[j]
+            if t == "--":
+                break
+            if t in ("-S", "--split-string"):
+                return j + 1
+            if t.startswith("--split-string=") or (
+                t.startswith("-") and not t.startswith("--") and "S" in t[1:]
+            ):
+                return j
+            if t in ("-u", "--unset", "-C", "--chdir"):
+                j += 2
+                continue
+            if "=" in t or t.startswith("-"):
+                j += 1
+                continue
+            break
+    return None
+
+
+def _shell_c_script_index(tokens):
+    """Fail-closed guard for shell command execution anywhere in `tokens`.
+
+    For POSIX shells (sh/bash/dash/zsh/ksh/ash), allows placeholders/trailing URLs ONLY in
+    the unambiguous positional-arg form `<shell> -c <non-option literal script> <$0> <$1...>`
+    with no extra shell options. Any other `-c`/`--command` invocation fails closed
+    (`return len(tokens)`). For `fish` (which accepts GNU-style long-option abbreviations and
+    continues parsing options after `-c`), ANY option before `--` fails closed.
+    """
+    highest = None
+    for j, t in enumerate(tokens):
+        shell_name = os.path.basename(t)
+        if shell_name not in SHELL_BINS:
+            continue
+        if shell_name == "fish":
+            # Fish accepts unique abbreviations of --command/--init-command and keeps parsing
+            # options after -c; fail closed whenever any flag precedes `--`.
+            for tok in tokens[j + 1 :]:
+                if tok == "--":
+                    break
+                if tok.startswith("-"):
+                    return len(tokens)
+            continue
+        has_cmd_flag = False
+        for i in range(j + 1, len(tokens)):
+            tok = tokens[i]
+            if tok == "--":
+                break
+            if (
+                tok in ("-c", "-C", "--command", "--init-command")
+                or tok.startswith("--command=")
+                or tok.startswith("--init-command=")
+                or (
+                    tok.startswith("-")
+                    and not tok.startswith("--")
+                    and ("c" in tok[1:] or "C" in tok[1:])
+                )
+            ):
+                has_cmd_flag = True
+                break
+        if not has_cmd_flag:
+            continue
+        # Only permit the simple safe form: `<shell> -c <script> ...` where <script> is not an option.
+        if (
+            j + 2 < len(tokens)
+            and tokens[j + 1] == "-c"
+            and tokens[j + 2]
+            and tokens[j + 2][0] not in "-+"
+            and not any(
+                x in ("-c", "-C", "--command", "--init-command")
+                or x.startswith("--command=")
+                or x.startswith("--init-command=")
+                for x in tokens[j + 3 :]
+            )
+        ):
+            cand = j + 2
+        else:
+            # Fail closed on any extra flags, clusters, or missing script.
+            return len(tokens)
+        highest = cand if highest is None else max(highest, cand)
+    return highest
+
+
+def _token_hits_shell_guard(idx, shell_script_idx, env_s_start):
+    if env_s_start is not None and idx >= env_s_start:
+        return True
+    if shell_script_idx is not None and idx <= shell_script_idx:
+        return True
+    return False
+
+
+def exec_is_available(tokens, try_exec=""):
+    """Check whether both TryExec (if present) and the Exec command point to installed executables."""
+    if try_exec and not _executable_exists(try_exec):
+        return False
+    idx = _unwrap_exec_index(tokens, check_wrappers=True)
+    if idx is None:
+        return False
+    if idx == -1:
+        return True  # flatpak run + installed app verified by _unwrap_exec_index
+    return _executable_exists(tokens[idx])
+
+
+def expand_desktop_exec(tokens, target_uri):
+    """Expand %u/%U (and %% -> %) in Desktop Entry Exec tokens.
+
+    Drops unused desktop field codes BEFORE checking shell guard positions so removing a
+    token like `%f` cannot shift an implicitly appended URL into a shell `-c` script slot.
+    """
+    filtered = [tok for tok in tokens if tok not in FIELD_CODES_DROP]
+    shell_script_idx = _shell_c_script_index(filtered)
+    env_s_start = _env_split_string_start(filtered)
+    argv = []
+    inserted = False
+    for i, tok in enumerate(filtered):
+        has_uri_code = tok in ("%u", "%U") or "%u" in tok or "%U" in tok
+        if has_uri_code:
+            if _token_hits_shell_guard(i, shell_script_idx, env_s_start):
+                return None
+            if tok in ("%u", "%U"):
+                argv.append(target_uri)
+            else:
+                sentinel = "\x00PCT\x00"
+                s = tok.replace("%%", sentinel)
+                s = s.replace("%u", target_uri).replace("%U", target_uri)
+                argv.append(s.replace(sentinel, "%"))
+            inserted = True
+            continue
+        argv.append(tok.replace("%%", "%"))
+    if not inserted:
+        if _token_hits_shell_guard(len(filtered), shell_script_idx, env_s_start):
+            return None
+        argv.append(target_uri)
+    return argv
+
+
+_DESKTOP_KEYS = {"Name", "Exec", "TryExec", "MimeType", "Hidden", "NoDisplay", "Type"}
+
+
+def _read_desktop_entry_section(path):
+    """Fast parser for the [Desktop Entry] section (skips localized keys and action sections)."""
+    data = {}
+    in_entry = False
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                if s.startswith("["):
+                    if s == "[Desktop Entry]":
+                        in_entry = True
+                        continue
+                    if in_entry:
+                        break
+                    continue
+                if not in_entry or "=" not in s:
+                    continue
+                key, val = s.split("=", 1)
+                key = key.strip()
+                if key in _DESKTOP_KEYS and key not in data:
+                    data[key] = val.strip()
+    except OSError:
+        return None
+    return data if in_entry else None
+
+
+def _mimeapps_file_entries(path):
+    """Parse one mimeapps.list file into (defaults, added, removed) per scheme."""
+    defaults, added, removed = {}, {}, {}
+    section = None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                if s.startswith("["):
+                    section = s
+                    continue
+                if section not in (
+                    "[Default Applications]",
+                    "[Added Associations]",
+                    "[Removed Associations]",
+                ):
+                    continue
+                if "=" not in s:
+                    continue
+                mime, val = s.split("=", 1)
+                mime = mime.strip()
+                if not mime.startswith("x-scheme-handler/"):
+                    continue
+                scheme = mime[len("x-scheme-handler/") :].strip().lower()
+                ids = [x.strip() for x in val.split(";") if x.strip()]
+                if not ids:
+                    continue
+                if section == "[Default Applications]":
+                    defaults.setdefault(scheme, []).extend(ids)
+                elif section == "[Added Associations]":
+                    added.setdefault(scheme, []).extend(ids)
+                elif section == "[Removed Associations]":
+                    removed.setdefault(scheme, []).extend(ids)
+    except OSError:
+        pass
+    return defaults, added, removed
+
+
+def _mimeapps_search_levels(app_dirs=None):
+    """Return ordered Freedesktop spec levels: (mimeapps_files, desktop_dir_or_None).
+
+    Per mime-apps-spec, config dirs precede data dirs, and each data dir's mimeapps.list
+    applies to that data dir and lower-priority data dirs (never to higher-priority dirs).
+    """
+    cfg_home = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    cfg_dirs = [d for d in (os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(":") if d]
+    desktops = _current_desktops()
+    dirs = app_dirs if app_dirs is not None else desktop_app_dirs()
+
+    def existing_in(base_dir):
+        files = []
+        for desk in desktops:
+            p = os.path.normpath(os.path.join(base_dir, f"{desk}-mimeapps.list"))
+            if os.path.isfile(p):
+                files.append(p)
+        p = os.path.normpath(os.path.join(base_dir, "mimeapps.list"))
+        if os.path.isfile(p):
+            files.append(p)
+        return files
+
+    seen_files = set()
+
+    def unique_files(base_dir):
+        out = []
+        for p in existing_in(base_dir):
+            if p not in seen_files:
+                seen_files.add(p)
+                out.append(p)
+        return out
+
+    levels = []
+    # Config levels (no .desktop files, only mimeapps.list).
+    levels.append((unique_files(cfg_home), None))
+    for d in cfg_dirs:
+        levels.append((unique_files(d), None))
+    # Data levels (each applications dir has its own mimeapps.list + .desktop files).
+    for d in dirs:
+        levels.append((unique_files(d), d))
+    return levels
+
+
+def _read_mimeapps_defaults():
+    """Return {scheme: [desktop_id, ...]} from mimeapps.list [Default Applications]."""
+    defaults = {}
+    for path in mimeapps_paths():
+        f_def, _f_add, _f_rem = _mimeapps_file_entries(path)
+        for sc, ids in f_def.items():
+            defaults.setdefault(sc, []).extend(ids)
+    return defaults
+
+
+def scan_desktop_entries(app_dirs=None, mimeapps_defaults=None, mimeapps_added=None, mimeapps_removed=None):
+    """Scan installed .desktop files and return (entries_by_id, scheme_handlers).
+
+    Follows Freedesktop mime-apps-spec precedence across config and data levels so a
+    [Removed Associations] entry in a lower-priority directory cannot suppress a desktop
+    entry or association from a higher-priority directory.
+    """
+    dirs = app_dirs if app_dirs is not None else desktop_app_dirs()
+    explicit_mimeapps = not (
+        mimeapps_defaults is None and mimeapps_added is None and mimeapps_removed is None
+    )
+
+    defaults = {}
+    # Ordered list of (level_idx, added_dict, removed_dict) for each spec level.
+    level_ops = []
+    if explicit_mimeapps:
+        defaults = {sc: list(ids) for sc, ids in (mimeapps_defaults or {}).items()}
+        level_ops.append((0, mimeapps_added or {}, mimeapps_removed or {}))
+        dir_ranks = {os.path.normpath(d): i + 1 for i, d in enumerate(dirs)}
+    else:
+        levels = _mimeapps_search_levels(dirs)
+        dir_ranks = {}
+        for lvl_idx, (mfiles, ddir) in enumerate(levels):
+            lvl_add, lvl_rem = {}, {}
+            for mf in mfiles:
+                f_def, f_add, f_rem = _mimeapps_file_entries(mf)
+                for sc, ids in f_def.items():
+                    defaults.setdefault(sc, []).extend(ids)
+                for sc, ids in f_add.items():
+                    lvl_add.setdefault(sc, []).extend(ids)
+                for sc, ids in f_rem.items():
+                    lvl_rem.setdefault(sc, []).extend(ids)
+            if lvl_add or lvl_rem:
+                level_ops.append((lvl_idx, lvl_add, lvl_rem))
+            if ddir is not None:
+                dir_ranks[os.path.normpath(ddir)] = lvl_idx
+
+    referenced_ids = set()
+    for ids in defaults.values():
+        referenced_ids.update(ids)
+    for _lvl, lvl_add, _lvl_rem in level_ops:
+        for ids in lvl_add.values():
+            referenced_ids.update(ids)
+
+    entries = {}
+    scheme_candidates = {}
+
+    for d in dirs:
+        d_rank = dir_ranks.get(os.path.normpath(d), len(level_ops) + 1)
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for fname in names:
+            if not fname.endswith(".desktop") or fname in entries:
+                continue
+            path = os.path.join(d, fname)
+            if not os.path.isfile(path):
+                continue
+            de = _read_desktop_entry_section(path)
+            if de is None:
+                continue
+            if de.get("Hidden", "").lower() == "true":
+                entries[fname] = None  # masks lower-priority entries of the same ID
+                continue
+            if de.get("Type", "Application") != "Application":
+                continue
+            exec_raw = de.get("Exec", "")
+            if not exec_raw:
+                continue
+            mime_raw = de.get("MimeType", "")
+            has_scheme = "x-scheme-handler/" in mime_raw
+            maybe_webapp = (
+                "omarchy-launch-webapp" in exec_raw
+                or "--app=" in exec_raw
+                or "--app " in exec_raw
+            )
+            if not has_scheme and not maybe_webapp and fname not in referenced_ids:
+                entries[fname] = None
+                continue
+            tokens = parse_exec_tokens(exec_raw)
+            if not tokens:
+                continue
+            real_idx = _unwrap_exec_index(tokens, check_wrappers=False)
+            real_base = (
+                os.path.basename(tokens[real_idx])
+                if (real_idx is not None and real_idx >= 0)
+                else os.path.basename(tokens[0])
+            )
+            if fname in SELF_DESKTOPS or real_base == "browser-picker":
+                entries[fname] = None
+                continue
+            try_exec = unescape_desktop_string(de.get("TryExec", ""))
+            name = sanitize_label(unescape_desktop_string(de.get("Name", ""))) or fname[:-8]
+            no_display = de.get("NoDisplay", "").lower() == "true"
+            schemes = [
+                m[len("x-scheme-handler/") :].lower()
+                for m in (x.strip() for x in mime_raw.split(";"))
+                if m.startswith("x-scheme-handler/")
+            ]
+            entry = {
+                "id": fname,
+                "path": path,
+                "name": name,
+                "exec_raw": exec_raw,
+                "tokens": tokens,
+                "try_exec": try_exec,
+                "no_display": no_display,
+                "schemes": schemes,
+                "rank": d_rank,
+            }
+            entries[fname] = entry
+            for sc in schemes:
+                scheme_candidates.setdefault(sc, []).append(entry)
+
+    live_entries = {k: v for k, v in entries.items() if v is not None}
+
+    all_schemes = set(scheme_candidates.keys()) | set(defaults.keys())
+    for _lvl, lvl_add, _lvl_rem in level_ops:
+        all_schemes.update(lvl_add.keys())
+
+    scheme_handlers = {}
+    for sc in all_schemes:
+        # Walk levels in spec order: a [Removed Associations] entry at level L blocks
+        # additions and desktop MimeType declarations at level >= L (never higher-priority ones).
+        ordered_assoc = []
+        seen_assoc = set()
+        blocked = set()
+
+        # Index desktop entries by level rank for this scheme.
+        cands_by_rank = {}
+        for cand in scheme_candidates.get(sc, []):
+            cands_by_rank.setdefault(cand["rank"], []).append(cand)
+
+        ops_by_rank = {lvl: (lvl_add.get(sc, ()), lvl_rem.get(sc, ())) for lvl, lvl_add, lvl_rem in level_ops}
+        all_ranks = sorted(set(ops_by_rank.keys()) | set(cands_by_rank.keys()))
+        for r in all_ranks:
+            r_add, r_rem = ops_by_rank.get(r, ((), ()))
+            for did in r_add:
+                # Per Freedesktop mime-apps-spec, an [Added Associations] entry applies only
+                # to desktop entries at the same or lower precedence (rank >= r); a higher-
+                # precedence user copy shadows lower-precedence system directory additions.
+                if (
+                    did not in blocked
+                    and did not in seen_assoc
+                    and did in live_entries
+                    and live_entries[did]["rank"] >= r
+                ):
+                    seen_assoc.add(did)
+                    ordered_assoc.append(did)
+            for did in r_rem:
+                if did not in seen_assoc:
+                    blocked.add(did)
+            for cand in cands_by_rank.get(r, ()):
+                did = cand["id"]
+                if did not in blocked and did not in seen_assoc:
+                    seen_assoc.add(did)
+                    ordered_assoc.append(did)
+
+        chosen = None
+        # 1) [Default Applications] — must exist, be associated after spec precedence, and be executable.
+        for did in defaults.get(sc, []):
+            cand = live_entries.get(did)
+            if cand and did in seen_assoc and exec_is_available(cand["tokens"], cand["try_exec"]):
+                chosen = cand
+                break
+        # 2) Associated handlers in spec order ([Added Associations] + desktop MimeType=).
+        if chosen is None:
+            for did in ordered_assoc:
+                cand = live_entries.get(did)
+                if cand and exec_is_available(cand["tokens"], cand["try_exec"]):
+                    chosen = cand
+                    break
+        if chosen is not None:
+            scheme_handlers[sc] = chosen
+
+    return live_entries, scheme_handlers
+
+
+# --- Built-in native desktop app web-URL -> deep-link converters ---
+
+
+# Matches T3 Code's packages/shared/src/promptLinks.ts (promptLinkAppPath / promptLinkDeepLink)
+# and apps/desktop/src/app/DesktopClerk.ts (openAppLink).
+def _convert_t3code(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host != "app.t3.codes":
+        return None
+    segs = [s for s in parsed.path.split("/") if s]
+    q = f"?{parsed.query}" if parsed.query else ""
+    if segs == ["new"]:
+        return f"{scheme}://new{q}"
+    if segs and segs[0] == "threads":
+        if len(segs) == 3:
+            return f"{scheme}://threads/{segs[1]}/{segs[2]}{q}"
+        return None
+    if len(segs) == 2 and segs[0].lower() not in T3_RESERVED:
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if "prompt" in params or UUID_RE.match(segs[0]):
+            return f"{scheme}://threads/{segs[0]}/{segs[1]}{q}"
+    return None
+
+
+def _convert_spotify(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host not in ("open.spotify.com", "play.spotify.com"):
+        return None
+    segs = [s for s in parsed.path.split("/") if s]
+    if segs and SPOTIFY_INTL_RE.match(segs[0]):
+        segs = segs[1:]
+    if not segs:
+        return None
+    if len(segs) >= 4 and segs[0] == "user" and segs[2] == "playlist":
+        return f"{scheme}:playlist:{segs[3]}"
+    if len(segs) >= 2 and segs[0] in (
+        "track",
+        "album",
+        "artist",
+        "playlist",
+        "episode",
+        "show",
+        "user",
+    ):
+        return f"{scheme}:{segs[0]}:{segs[1]}"
+    if len(segs) >= 2 and segs[0] == "search":
+        return f"{scheme}:search:{segs[1]}"
+    return None
+
+
+def _convert_zoom(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host != "zoom.us" and not host.endswith(".zoom.us"):
+        return None
+    segs = [s for s in parsed.path.split("/") if s]
+    action = None
+    confno = None
+    if len(segs) >= 2 and segs[0] in ("j", "w"):
+        action, confno = "join", segs[1]
+    elif len(segs) >= 2 and segs[0] == "s":
+        action, confno = "start", segs[1]
+    elif len(segs) >= 3 and segs[0] == "wc" and segs[1] == "join":
+        action, confno = "join", segs[2]
+    if not confno or not re.match(r"^[0-9A-Za-z_-]{5,}\Z", confno):
+        return None
+    qparams = urllib.parse.parse_qs(parsed.query)
+    out_params = []
+    if action == "join":
+        out_params.append(("action", "join"))
+    out_params.append(("confno", confno))
+    for key in ("pwd", "uname", "zak"):
+        if key in qparams and qparams[key]:
+            out_params.append((key, qparams[key][0]))
+    return f"{scheme}://zoom.us/{action}?{urllib.parse.urlencode(out_params)}"
+
+
+def _convert_slack(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host != "app.slack.com" and not host.endswith(".slack.com"):
+        return None
+    segs = [s for s in parsed.path.split("/") if s]
+    qparams = urllib.parse.parse_qs(parsed.query)
+    if host == "app.slack.com" and len(segs) >= 2 and segs[0] == "client":
+        team = segs[1]
+        if not SLACK_TEAM_RE.match(team):
+            return None
+        if len(segs) == 2:
+            return f"{scheme}://open?{urllib.parse.urlencode([('team', team)])}"
+        chan = segs[2]
+        if not SLACK_CHANNEL_RE.match(chan):
+            return f"{scheme}://open?{urllib.parse.urlencode([('team', team)])}"
+        params = [("team", team), ("id", chan)]
+        if len(segs) >= 4:
+            if SLACK_TS_RE.match(segs[3]):
+                params.append(("message", segs[3]))
+            else:
+                m = SLACK_P_TS_RE.match(segs[3])
+                if m:
+                    params.append(("message", f"{m.group(1)}.{m.group(2)}"))
+        return f"{scheme}://channel?{urllib.parse.urlencode(params)}"
+    if len(segs) >= 2 and segs[0] == "archives" and SLACK_CHANNEL_RE.match(segs[1]):
+        team = qparams["team"][0] if ("team" in qparams and qparams["team"]) else ""
+        if not SLACK_TEAM_RE.match(team):
+            return None
+        params = [("team", team), ("id", segs[1])]
+        if len(segs) >= 3:
+            m = SLACK_P_TS_RE.match(segs[2])
+            if m:
+                params.append(("message", f"{m.group(1)}.{m.group(2)}"))
+        if "thread_ts" in qparams and qparams["thread_ts"] and SLACK_TS_RE.match(qparams["thread_ts"][0]):
+            params.append(("thread_ts", qparams["thread_ts"][0]))
+        return f"{scheme}://channel?{urllib.parse.urlencode(params)}"
+    return None
+
+
+def _convert_telegram(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host not in ("t.me", "telegram.me", "telegram.dog"):
+        return None
+    segs = [s for s in parsed.path.split("/") if s]
+    if not segs:
+        return None
+    qparams = urllib.parse.parse_qs(parsed.query)
+    first = segs[0]
+    if first.startswith("+") and len(first) > 1:
+        rest = first[1:]
+        if rest.isdigit():
+            return f"{scheme}://resolve?{urllib.parse.urlencode([('phone', rest)])}"
+        return f"{scheme}://join?{urllib.parse.urlencode([('invite', rest)])}"
+    if first == "joinchat" and len(segs) >= 2:
+        return f"{scheme}://join?{urllib.parse.urlencode([('invite', segs[1])])}"
+    if first == "addstickers" and len(segs) >= 2:
+        return f"{scheme}://addstickers?{urllib.parse.urlencode([('set', segs[1])])}"
+    if first == "addemoji" and len(segs) >= 2:
+        return f"{scheme}://addemoji?{urllib.parse.urlencode([('set', segs[1])])}"
+    if first == "c" and len(segs) >= 3 and segs[1].isdigit() and segs[2].isdigit():
+        params = [("channel", segs[1]), ("post", segs[2])]
+        for key in ("thread", "comment", "single"):
+            if key in qparams and qparams[key]:
+                params.append((key, qparams[key][0]))
+        return f"{scheme}://privatepost?{urllib.parse.urlencode(params)}"
+    if first == "s" and len(segs) >= 2 and TG_USER_RE.match(segs[1]):
+        params = [("domain", segs[1])]
+        if len(segs) >= 3 and segs[2].isdigit():
+            params.append(("post", segs[2]))
+        return f"{scheme}://resolve?{urllib.parse.urlencode(params)}"
+    if first.lower() in TG_RESERVED or not TG_USER_RE.match(first):
+        return None
+    params = [("domain", first)]
+    if len(segs) >= 2 and segs[1].isdigit():
+        params.append(("post", segs[1]))
+    for key in ("start", "startgroup", "startchannel", "startapp", "text", "thread", "comment"):
+        if key in qparams and qparams[key]:
+            params.append((key, qparams[key][0]))
+    return f"{scheme}://resolve?{urllib.parse.urlencode(params)}"
+
+
+def _convert_discord(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    segs = [s for s in parsed.path.split("/") if s]
+    if host == "discord.gg":
+        if len(segs) >= 1:
+            return f"{scheme}://-/invite/{segs[0]}"
+        return None
+    if host not in ("discord.com", "ptb.discord.com", "canary.discord.com", "discordapp.com"):
+        return None
+    if len(segs) >= 2 and segs[0] in ("channels", "invite", "users"):
+        rest = "/".join(segs)
+        return f"{scheme}://-/{rest}"
+    return None
+
+
+def _convert_linear(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host != "linear.app":
+        return None
+    segs = [s for s in parsed.path.split("/") if s]
+    if not segs or segs[0].lower() in LINEAR_RESERVED:
+        return None
+    path = parsed.path.lstrip("/")
+    q = f"?{parsed.query}" if parsed.query else ""
+    return f"{scheme}://{path}{q}"
+
+
+def _convert_notion(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host != "notion.so" and not host.endswith(".notion.site"):
+        return None
+    segs = [s for s in parsed.path.split("/") if s]
+    if not segs or segs[0].lower() in NOTION_RESERVED:
+        return None
+    raw_host = parsed.netloc.split("@")[-1]
+    q = f"?{parsed.query}" if parsed.query else ""
+    frag = f"#{parsed.fragment}" if parsed.fragment else ""
+    return f"{scheme}://{raw_host}{parsed.path}{q}{frag}"
+
+
+def _convert_figma(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host != "figma.com":
+        return None
+    segs = [s for s in parsed.path.split("/") if s]
+    if len(segs) < 2 or segs[0] not in FIGMA_PREFIXES:
+        return None
+    path = parsed.path.lstrip("/")
+    q = f"?{parsed.query}" if parsed.query else ""
+    return f"{scheme}://{path}{q}"
+
+
+def _convert_steam(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host not in ("store.steampowered.com", "steamcommunity.com"):
+        return None
+    return f"{scheme}://openurl/{url}"
+
+
+def _convert_signal(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host not in ("signal.me", "signal.group"):
+        return None
+    if not parsed.fragment and not parsed.path.strip("/"):
+        return None
+    q = f"?{parsed.query}" if parsed.query else ""
+    frag = f"#{parsed.fragment}" if parsed.fragment else ""
+    return f"{scheme}://{host}{parsed.path}{q}{frag}"
+
+
+def _convert_matrix(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host != "matrix.to":
+        return None
+    frag = parsed.fragment or ""
+    if not frag.startswith("/"):
+        return None
+    frag_path, _, frag_query = frag[1:].partition("?")
+    parts = [urllib.parse.unquote(p) for p in frag_path.split("/") if p]
+    if not parts:
+        return None
+    ident = parts[0]
+    if ident.startswith("#") and len(ident) > 1:
+        body = f"r/{urllib.parse.quote(ident[1:], safe=':')}"
+    elif ident.startswith("!") and len(ident) > 1:
+        body = f"roomid/{urllib.parse.quote(ident[1:], safe=':')}"
+    elif ident.startswith("@") and len(ident) > 1:
+        body = f"u/{urllib.parse.quote(ident[1:], safe=':')}"
+    else:
+        return None
+    if len(parts) >= 2 and parts[1].startswith("$") and len(parts[1]) > 1:
+        body += f"/e/{urllib.parse.quote(parts[1][1:], safe=':')}"
+    q = f"?{frag_query}" if frag_query else ""
+    return f"{scheme}:{body}{q}"
+
+
+def _convert_teams(url, parsed, scheme):
+    host = normalize_host(parsed.netloc)
+    if host not in ("teams.microsoft.com", "teams.live.com"):
+        return None
+    segs = [s for s in parsed.path.split("/") if s]
+    if not segs or segs[0] not in ("l", "meet"):
+        return None
+    q = f"?{parsed.query}" if parsed.query else ""
+    return f"{scheme}://{host}{parsed.path}{q}"
+
+
+# Built-in native desktop app specs:
+#   (default_label, schemes_in_priority_order, converter_fn, use_desktop_name)
+NATIVE_APP_SPECS = [
+    ("T3 Code", ("t3code", "t3code-dev"), _convert_t3code, False),
+    ("Spotify", ("spotify",), _convert_spotify, False),
+    ("Zoom", ("zoommtg", "zoomus"), _convert_zoom, False),
+    ("Slack", ("slack",), _convert_slack, False),
+    ("Telegram", ("tg",), _convert_telegram, False),
+    ("Discord", ("discord",), _convert_discord, False),
+    ("Linear", ("linear",), _convert_linear, False),
+    ("Notion", ("notion",), _convert_notion, False),
+    ("Figma", ("figma",), _convert_figma, False),
+    ("Microsoft Teams", ("msteams",), _convert_teams, False),
+    ("Steam", ("steam",), _convert_steam, False),
+    ("Signal", ("sgnl",), _convert_signal, False),
+    ("Matrix", ("matrix",), _convert_matrix, True),
+]
+
+
+def discover_native_apps(scheme_handlers):
+    """Build native app handler records for every built-in app installed on this machine."""
+    out = []
+    for default_label, schemes, converter, use_desktop_name in NATIVE_APP_SPECS:
+        matched_scheme = None
+        desktop_entry = None
+        for sc in schemes:
+            if sc in scheme_handlers:
+                matched_scheme = sc
+                desktop_entry = scheme_handlers[sc]
+                break
+        if desktop_entry is None:
+            continue
+        label = desktop_entry["name"] if (use_desktop_name and desktop_entry.get("name")) else default_label
+        out.append(
+            {
+                "label": label,
+                "kind": "native",
+                "scheme": matched_scheme,
+                "desktop": desktop_entry,
+                "converter": converter,
+                "source": f"{desktop_entry['id']} ({matched_scheme}://)",
+            }
+        )
+    return out
+
+
+# --- Installed web apps (Omarchy `omarchy-launch-webapp` & Chromium `--app=`) ---
+
+
+def _parse_webapp_entry(entry):
+    """If desktop entry is an Omarchy or Chromium --app= web app, return a webapp record."""
+    if entry.get("no_display"):
+        return None
+    tokens = entry.get("tokens") or []
+    if not tokens:
+        return None
+    if not exec_is_available(tokens, entry.get("try_exec", "")):
+        return None
+
+    exe = tokens[0]
+    exe_base = os.path.basename(exe)
+
+    # Case 1: omarchy-launch-webapp https://... [--profile-directory=... ...]
+    if exe_base == "omarchy-launch-webapp":
+        url_idx = None
+        for i in range(1, len(tokens)):
+            if parse_http_url(tokens[i]) is not None:
+                url_idx = i
+                break
+        if url_idx is None:
+            return None
+        parsed = parse_http_url(tokens[url_idx])
+        host = normalize_host(parsed.netloc)
+        if not host:
+            return None
+        extra_before = [t for t in tokens[1:url_idx] if t not in FIELD_CODES_DROP and t not in ("%u", "%U")]
+        extra_after = [t for t in tokens[url_idx + 1 :] if t not in FIELD_CODES_DROP and t not in ("%u", "%U")]
+        return {
+            "label": f"{entry['name']} — Web App",
+            "kind": "webapp",
+            "host": host,
+            "argv_template": [exe] + extra_before + ["{url}"] + extra_after,
+            "source": f"{entry['id']} ({host})",
+        }
+
+    # Case 2: Chromium-family --app=https://... (or --app https://...)
+    if exe_base in CHROMIUM_WEBAPP_BINS:
+        argv_template = []
+        host = None
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok in FIELD_CODES_DROP or tok in ("%u", "%U"):
+                i += 1
+                continue
+            if tok.startswith("--app="):
+                parsed = parse_http_url(tok[len("--app=") :])
+                if parsed is not None and host is None:
+                    host = normalize_host(parsed.netloc)
+                    argv_template.append("--app={url}")
+                    i += 1
+                    continue
+            if tok == "--app" and i + 1 < len(tokens):
+                parsed = parse_http_url(tokens[i + 1])
+                if parsed is not None and host is None:
+                    host = normalize_host(parsed.netloc)
+                    argv_template.extend(["--app", "{url}"])
+                    i += 2
+                    continue
+            argv_template.append(tok)
+            i += 1
+        if host:
+            return {
+                "label": f"{entry['name']} — Web App",
+                "kind": "webapp",
+                "host": host,
+                "argv_template": argv_template,
+                "source": f"{entry['id']} ({host})",
+            }
+
+    return None
+
+
+def discover_webapps(live_entries):
+    """Build web app handler records from installed .desktop entries."""
+    out = []
+    seen_labels = {}
+    for _did, entry in sorted(live_entries.items(), key=lambda kv: (kv[1]["name"].lower(), kv[0])):
+        rec = _parse_webapp_entry(entry)
+        if rec is None:
+            continue
+        lbl = rec["label"]
+        if lbl in seen_labels:
+            if seen_labels[lbl] == rec["host"]:
+                continue
+            lbl = f"{entry['name']} ({rec['host']}) — Web App"
+            if lbl in seen_labels:
+                continue
+            rec["label"] = lbl
+        seen_labels[lbl] = rec["host"]
+        out.append(rec)
+    return out
+
+
+# --- User-configured custom apps (~/.config/browser-picker/apps.conf) ---
+
+
+def load_custom_app_rules(path=None):
+    """Read custom app rules from apps.conf: [(label, pattern, command)]."""
+    p = path if path is not None else APPS_FILE
+    if not os.path.exists(p):
+        return []
+    out = []
+    try:
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                parts = s.split("|||", 2)
+                if len(parts) != 3:
+                    continue
+                label, pattern, command = parts[0].strip(), parts[1].strip(), parts[2].strip()
+                if label and pattern and command:
+                    out.append((label, pattern, command))
+    except OSError:
+        return []
+    return out
+
+
+def _template_vars(url, regex_match=None):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        parsed = urllib.parse.urlsplit("")
+    vals = {
+        "url": url,
+        "scheme": parsed.scheme,
+        "netloc": parsed.netloc,
+        "host": normalize_host(parsed.netloc) if parsed.netloc else "",
+        "path": parsed.path,
+        "path_no_slash": parsed.path.lstrip("/"),
+        "query": parsed.query,
+        "query_part": f"?{parsed.query}" if parsed.query else "",
+        "fragment": parsed.fragment,
+        "fragment_part": f"#{parsed.fragment}" if parsed.fragment else "",
+    }
+    if regex_match is not None and hasattr(regex_match, "groups"):
+        for idx, group in enumerate(regex_match.groups(), start=1):
+            vals[str(idx)] = "" if group is None else group
+    return vals
+
+
+_PLACEHOLDER_RE = re.compile(r"\{([a-z_]+|[1-9]\d*)\}")
+
+
+def expand_template(text, variables):
+    """Replace known {placeholder} tokens without crashing on literal braces."""
+    used = False
+
+    def repl(m):
+        nonlocal used
+        key = m.group(1)
+        if key in variables:
+            used = True
+            return variables[key]
+        return m.group(0)
+
+    return _PLACEHOLDER_RE.sub(repl, text), used
+
+
+def resolve_custom_command(command, url, regex_match, scheme_handlers):
+    """Resolve a custom apps.conf command into (argv, target_desc) or (None, None)."""
+    variables = _template_vars(url, regex_match)
+    if command.lower().startswith("uri:"):
+        uri_tpl = command[4:].strip()
+        target_uri, _ = expand_template(uri_tpl, variables)
+        if ":" not in target_uri:
+            return None, None
+        scheme = target_uri.split(":", 1)[0].strip().lower()
+        if not scheme or scheme in BLOCKED_URI_SCHEMES:
+            return None, None
+        handler = scheme_handlers.get(scheme)
+        if handler is None:
+            return None, None
+        argv = expand_desktop_exec(handler["tokens"], target_uri)
+        return (argv, target_uri) if argv else (None, None)
+
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return None, None
+    if not tokens or not exec_is_available(tokens):
+        return None, None
+    shell_script_idx = _shell_c_script_index(tokens)
+    env_s_start = _env_split_string_start(tokens)
+    argv = []
+    any_used = False
+    for i, tok in enumerate(tokens):
+        expanded, used = expand_template(tok, variables)
+        if used and _token_hits_shell_guard(i, shell_script_idx, env_s_start):
+            return None, None  # never interpolate untrusted URL pieces into shell -c / env -S source
+        argv.append(expanded)
+        any_used = any_used or used
+    if not any_used:
+        if _token_hits_shell_guard(len(tokens), shell_script_idx, env_s_start):
+            return None, None
+        argv.append(url)
+    return argv, url
+
+
+# --- Unified registry & resolution ---
+
+
+def build_registry(
+    app_dirs=None,
+    mimeapps_defaults=None,
+    mimeapps_added=None,
+    mimeapps_removed=None,
+    apps_file=None,
+    enable_auto=None,
+    enable_webapps=None,
+):
+    """Build the complete local app registry for discovery, listing, and matching."""
+    use_auto = apps_enabled() if enable_auto is None else enable_auto
+    use_webapps = webapps_enabled() if enable_webapps is None else enable_webapps
+
+    live_entries, scheme_handlers = scan_desktop_entries(
+        app_dirs=app_dirs,
+        mimeapps_defaults=mimeapps_defaults,
+        mimeapps_added=mimeapps_added,
+        mimeapps_removed=mimeapps_removed,
+    )
+    native = discover_native_apps(scheme_handlers) if use_auto else []
+    webapps = discover_webapps(live_entries) if (use_auto and use_webapps) else []
+    custom_rules = load_custom_app_rules(apps_file)
+
+    # Separate disabled overrides vs active custom rules (grouped by label).
+    disabled_patterns = {}  # label -> [pattern, ...]
+    custom_by_label = {}  # label -> [(pattern, command), ...]
+    custom_order = []
+    for label, pattern, command in custom_rules:
+        if command.lower() == "disabled":
+            disabled_patterns.setdefault(label, []).append(pattern)
+        else:
+            if label not in custom_by_label:
+                custom_order.append(label)
+                custom_by_label[label] = []
+            custom_by_label[label].append((pattern, command))
+
+    return {
+        "scheme_handlers": scheme_handlers,
+        "native": native,
+        "webapps": webapps,
+        "custom_by_label": custom_by_label,
+        "custom_order": custom_order,
+        "disabled_patterns": disabled_patterns,
+    }
+
+
+def _is_disabled_globally(label, registry):
+    return "*" in registry["disabled_patterns"].get(label, [])
+
+
+def _is_disabled_for_url(label, url, registry):
+    return any(url_matches(pat, url) for pat in registry["disabled_patterns"].get(label, []))
+
+
+def _custom_command_available(command, scheme_handlers):
+    if command.lower().startswith("uri:"):
+        uri_tpl = command[4:].strip()
+        if ":" not in uri_tpl:
+            return False
+        scheme = uri_tpl.split(":", 1)[0].strip().lower()
+        if "{" in scheme:
+            return bool(scheme_handlers)
+        return bool(scheme) and scheme not in BLOCKED_URI_SCHEMES and scheme in scheme_handlers
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if not tokens or not exec_is_available(tokens):
+        return False
+    shell_script_idx = _shell_c_script_index(tokens)
+    env_s_start = _env_split_string_start(tokens)
+    any_placeholder = False
+    for i, tok in enumerate(tokens):
+        if _PLACEHOLDER_RE.search(tok):
+            any_placeholder = True
+            if _token_hits_shell_guard(i, shell_script_idx, env_s_start):
+                return False
+    if not any_placeholder and _token_hits_shell_guard(len(tokens), shell_script_idx, env_s_start):
+        return False
+    return True
+
+
+def list_apps(registry):
+    """Return [(label, kind, source)] for all available (non-globally-disabled) local apps."""
+    out = []
+    seen = set()
+
+    # Custom apps first so user overrides replace auto-discovered ones cleanly.
+    for label in registry["custom_order"]:
+        if _is_disabled_globally(label, registry):
+            continue
+        avail_pats = [
+            p
+            for p, cmd in registry["custom_by_label"][label]
+            if _custom_command_available(cmd, registry["scheme_handlers"])
+        ]
+        if not avail_pats:
+            continue
+        pats = ", ".join(avail_pats)
+        out.append((label, "custom", f"apps.conf ({pats})"))
+        seen.add(label)
+
+    for app in registry["native"]:
+        lbl = app["label"]
+        if lbl in seen or _is_disabled_globally(lbl, registry):
+            continue
+        out.append((lbl, "native", app["source"]))
+        seen.add(lbl)
+
+    for app in registry["webapps"]:
+        lbl = app["label"]
+        if lbl in seen or _is_disabled_globally(lbl, registry):
+            continue
+        out.append((lbl, "webapp", app["source"]))
+        seen.add(lbl)
+
+    return out
+
+
+def known_labels(registry):
+    return {label for label, _kind, _source in list_apps(registry)}
+
+
+def match_url(url, registry):
+    """Return list of matched app dicts for `url`: [{label, kind, target, argv}]."""
+    if not url:
+        return []
+    matches = []
+    seen = set()
+
+    webapp_label_set = {a["label"] for a in registry["webapps"]}
+
+    # 1. Custom apps from apps.conf (augment or override matching auto-discovered apps)
+    for label in registry["custom_order"]:
+        if _is_disabled_for_url(label, url, registry):
+            seen.add(label)
+            continue
+        for pat, cmd in registry["custom_by_label"][label]:
+            m = url_matches(pat, url)
+            if not m:
+                continue
+            argv, target = resolve_custom_command(cmd, url, m, registry["scheme_handlers"])
+            if argv:
+                kind = "webapp" if label in webapp_label_set else "custom"
+                matches.append(
+                    {"label": label, "kind": kind, "target": target, "argv": argv}
+                )
+                seen.add(label)
+                break
+
+    parsed = parse_http_url(url)
+    if parsed is None:
+        return matches
+
+    # 2. Auto-discovered native desktop apps
+    for app in registry["native"]:
+        label = app["label"]
+        if label in seen or _is_disabled_for_url(label, url, registry):
+            continue
+        target_uri = app["converter"](url, parsed, app["scheme"])
+        if not target_uri:
+            continue
+        scheme = target_uri.split(":", 1)[0].strip().lower()
+        if scheme in BLOCKED_URI_SCHEMES:
+            continue
+        argv = expand_desktop_exec(app["desktop"]["tokens"], target_uri)
+        if not argv:
+            continue
+        matches.append(
+            {"label": label, "kind": "native", "target": target_uri, "argv": argv}
+        )
+        seen.add(label)
+
+    # 3. Auto-discovered installed web apps
+    url_host = normalize_host(parsed.netloc)
+    for app in registry["webapps"]:
+        label = app["label"]
+        if label in seen or _is_disabled_for_url(label, url, registry):
+            continue
+        if url_host != app["host"]:
+            continue
+        argv = [tok.replace("{url}", url) for tok in app["argv_template"]]
+        matches.append({"label": label, "kind": "webapp", "target": url, "argv": argv})
+        seen.add(label)
+
+    return matches
+
+
+def resolve_for_label(label, url, registry):
+    """Return (status, matched_entry_or_None) for launching `label` on `url`.
+
+    status:
+      'match'   -> label is a known app and handles url
+      'no_url'  -> label is a known (or disabled) app, but does not handle this specific url
+      'unknown' -> label is not a known local app
+    """
+    for m in match_url(url, registry):
+        if m["label"] == label:
+            return "match", m
+    if label in known_labels(registry) or label in registry["disabled_patterns"]:
+        return "no_url", None
+    return "unknown", None
+
+
+def launch_argv(argv):
+    subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _opt(argv, name):
+    if name in argv:
+        i = argv.index(name)
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
+def main(argv):
+    if not argv:
+        return 2
+    cmd = argv[0]
+    reg = build_registry()
+
+    if cmd == "list":
+        detail = "--detail" in argv
+        for label, kind, source in list_apps(reg):
+            if detail:
+                sys.stdout.write(f"{label}\t{kind}\t{source}\n")
+            else:
+                sys.stdout.write(f"{label}\n")
+        return 0
+
+    if cmd == "match":
+        url = _opt(argv, "--url")
+        if not url:
+            return 2
+        for m in match_url(url, reg):
+            sys.stdout.write(f"{m['label']}\t{m['kind']}\t{m['target']}\n")
+        return 0
+
+    if cmd == "is-app":
+        label = _opt(argv, "--label")
+        if not label:
+            return 2
+        return 0 if label in known_labels(reg) else 1
+
+    if cmd == "can-handle":
+        label = _opt(argv, "--label")
+        url = _opt(argv, "--url")
+        if not label or not url:
+            return 2
+        status, _ = resolve_for_label(label, url, reg)
+        if status == "match":
+            return 0
+        if status == "no_url":
+            return 2
+        return 1
+
+    if cmd == "launch":
+        label = _opt(argv, "--label")
+        url = _opt(argv, "--url")
+        dry_run = "--dry-run" in argv
+        if not label or not url:
+            return 2
+        status, entry = resolve_for_label(label, url, reg)
+        if status == "no_url":
+            return 2
+        if status != "match" or entry is None:
+            return 1
+        if dry_run:
+            sys.stdout.write(json.dumps(entry["argv"]) + "\n")
+            return 0
+        try:
+            launch_argv(entry["argv"])
+            return 0
+        except OSError:
+            return 1
+
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
