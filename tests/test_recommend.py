@@ -161,6 +161,63 @@ check(bprec.rank_labels(LABELS, hist, "nowhere.com", [])[-1] == "Brave",
       "rank: never-used keep file order at the back")
 # With no history, order is unchanged.
 check(bprec.rank_labels(LABELS, [], "x.com", ["a"]) == LABELS, "rank: empty history -> file order")
+# URL-matched native app beats global-only browser picks on a fresh host; web apps do not
+# hijack an unvisited host ahead of browsers with global picks, and explicit host affinity wins.
+check(
+    bprec.rank_labels(["T3 Code"] + LABELS, hist, "app.t3.codes", ["threads", "e", "t"], {"T3 Code": 1})[0]
+    == "T3 Code",
+    "rank: matched native app beats unrelated global browser picks",
+)
+check(
+    bprec.rank_labels(
+        LABELS + ["YouTube — Web App"],
+        hist,
+        "youtube.com",
+        ["watch"],
+        {},
+    )[0]
+    == "Chromium — Work",
+    "rank: unpicked web app does not outrank user's most-used browser on a fresh host",
+)
+check(
+    bprec.rank_labels(
+        LABELS + ["GitHub — Web App"],
+        hist,
+        "github.com",
+        ["acme", "z"],
+        {},
+    )[:2]
+    == ["Firefox", "Chromium — Personal"],
+    "rank: explicit host picks still beat unpicked web app",
+)
+# Cross-host history on a shared web-app label must not outrank browsers on an unvisited host.
+cross_hist = hist + [{"label": "Figma — Web App", "host": "extra.example.com", "segs": ["a"]}] * 10
+check(
+    bprec.rank_labels(
+        LABELS + ["Figma — Web App"],
+        cross_hist,
+        "figma.com",
+        ["design", "1"],
+        {},
+        demote_global={"Figma — Web App"},
+    )[0]
+    == "Chromium — Work",
+    "rank: cross-host history does not promote web app ahead of browser on fresh host",
+)
+# Once picked on the host itself, the web app DOES jump to #1 on that host.
+same_host_hist = cross_hist + [{"label": "Figma — Web App", "host": "figma.com", "segs": ["design", "2"]}]
+check(
+    bprec.rank_labels(
+        LABELS + ["Figma — Web App"],
+        same_host_hist,
+        "figma.com",
+        ["design", "1"],
+        {},
+        demote_global={"Figma — Web App"},
+    )[0]
+    == "Figma — Web App",
+    "rank: same-host pick promotes web app to #1",
+)
 
 # Default threshold offers on the 1st repeat: one prior pick of the same place -> offer on reopen.
 check(bprec.threshold() == 2, "default threshold is 2 (offer on 1st repeat)")

@@ -26,7 +26,8 @@ and remembers the decisions you want to make permanent.
 
 ## Features
 
-- **Picker on every link** — choose browser + profile from a menu (Omarchy Quattro’s native menu, Walker, or your `BROWSER_PICKER_MENU`); the prompt shows the target URL (without query/fragment noise).
+- **Picker on every link** — choose a browser + profile (or matching local desktop/web app) from a menu (Omarchy Quattro’s native menu, Walker, or your `BROWSER_PICKER_MENU`); the prompt shows the target URL (without query/fragment noise).
+- **Local apps & web apps** — automatically offers installed desktop apps when a web URL maps to them (including **T3 Code** `app.t3.codes` thread/prompt links, Spotify, Zoom, Slack, Telegram, Discord, Linear, Notion, Figma, Microsoft Teams, Steam, Signal, Matrix) plus installed Omarchy / Chromium `--app=` web apps and custom entries in `apps.conf`. Matching apps appear only for relevant URLs, work with smart-default rules and habit learning, and never clutter unrelated links.
 - **Smart defaults** — rules like `github.com/myorg/myrepo → Chromium (Work)` open
   directly, no menu. Plain text matches on **path/host boundaries** (covers a URL *and its
   child paths*, but `…/repo` won't match `…/repo-staging`); `*`/`?` = glob; `regex:` prefix
@@ -72,7 +73,7 @@ Core install only touches user-level files:
 
 - `~/.local/bin/browser-picker*` symlinks (replaces same-name files/symlinks)
 - `~/.local/share/applications/browser-picker*.desktop` (regenerated on each install)
-- `~/.config/browser-picker/{browsers.conf,rules.conf}` if missing
+- `~/.config/browser-picker/{browsers.conf,rules.conf,apps.conf}` if missing
 - XDG default handlers for `http`, `https`, and `mailto`
 
 It does **not** require `sudo` and it does **not** install the Chromium web-app bridge by
@@ -96,13 +97,14 @@ set `BROWSER_PICKER_INSTALL_BRIDGE=1`. See
 
 ## Configuration
 
-Two files in `~/.config/browser-picker/`:
+Three files in `~/.config/browser-picker/`:
 
 - **`browsers.conf`** — `Label|||command` per line. The picker auto-adds newly discovered profiles; you can also use *Rescan profiles* in the editor.
 - **`rules.conf`** — `enabled|||pattern|||label[|||private]` per line (optional 4th field
-  `1` opens matching links in a private window). Managed by the editor.
+  `1` opens matching links in a private window). Managed by the editor; `label` can name either a browser profile or a local app.
+- **`apps.conf`** — optional `Label|||pattern|||command` overrides for custom local apps, `uri:` scheme rewrites, or disabling an auto-discovered app.
 
-Both are read fresh on every link click — no daemon, no restart.
+All three are read fresh on every link click — no daemon, no restart.
 
 See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full reference: pattern
 syntax (plain / glob / `regex:` / catch-all), the editor, profile detection, menu selection,
@@ -203,7 +205,9 @@ bash tests/run.sh   # shellcheck + bash syntax + py_compile + unit tests
 ```
 
 - `tests/test_matching.sh` — `matches()` (boundary/glob/regex) and `private_flag()`.
-- `tests/test_rules.py` — `default_pattern`, `normcmd`, `model_items`, `load_rules`.
+- `tests/test_picker_apps.sh` — end-to-end picker + rules + habit learning with local apps & web apps.
+- `tests/test_apps.py` — native desktop app URL converters, XDG discovery, web apps, and `apps.conf`.
+- `tests/test_rules.py` — `default_pattern`, `normcmd`, `model_items`, `load_rules`, `load_labels`.
 - `tests/test_recommend.py` — local recommender pattern, ranking, private-mode, and rule-writing logic.
 
 CI runs the same suite on every push/PR (see `.github/workflows/ci.yml`).

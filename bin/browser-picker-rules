@@ -6,6 +6,7 @@
 # Optional arg: a URL. When given, a new editable row is pre-filled with a sensible
 # pattern derived from that URL, and the link is opened (via browser-picker) after Save.
 import gi, os, sys, json, shutil, subprocess, configparser, urllib.parse
+import importlib.machinery, importlib.util
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib
 
@@ -15,6 +16,35 @@ RULES = os.path.join(CONF, "rules.conf")
 HOME = os.path.expanduser("~")
 ASK = "Always ask (show the menu)"
 NONE_FOUND = "(no browsers found)"
+_APPS_MOD = None
+
+
+def _apps_module():
+    """Import sibling browser-picker-apps (or the one on PATH) lazily."""
+    global _APPS_MOD
+    if _APPS_MOD is not None:
+        return _APPS_MOD
+    cands = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser-picker-apps"),
+        shutil.which("browser-picker-apps"),
+    ]
+    for path in cands:
+        if not path or not os.path.isfile(path):
+            continue
+        prev_no_bytecode = sys.dont_write_bytecode
+        try:
+            sys.dont_write_bytecode = True
+            loader = importlib.machinery.SourceFileLoader("browser_picker_apps", path)
+            spec = importlib.util.spec_from_loader("browser_picker_apps", loader)
+            mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(mod)
+            _APPS_MOD = mod
+            return mod
+        except Exception:
+            continue
+        finally:
+            sys.dont_write_bytecode = prev_no_bytecode
+    return None
 
 
 def read_lines(path):
@@ -30,8 +60,57 @@ def read_lines(path):
     return out
 
 
-def load_labels():
+def load_browser_labels():
     return [ln.split("|||", 1)[0] for ln in read_lines(BROWSERS)]
+
+
+def load_app_labels():
+    mod = _apps_module()
+    if mod is None:
+        return []
+    try:
+        return [lbl for lbl, _kind, _src in mod.list_apps(mod.build_registry())]
+    except Exception:
+        return []
+
+
+def match_app_label(url):
+    """Return the top matching local app label for `url`, or None."""
+    if not url:
+        return None
+    mod = _apps_module()
+    if mod is None:
+        return None
+    try:
+        hits = mod.match_url(url, mod.build_registry())
+        return hits[0]["label"] if hits else None
+    except Exception:
+        return None
+
+
+def format_rule_line(enabled, pattern, label, private=False):
+    en = "1" if enabled else "0"
+    if private:
+        return f"{en}|||{pattern}|||{label}|||1"
+    return f"{en}|||{pattern}|||{label}"
+
+
+def split_default_rule(rules):
+    """Split a trailing non-private catch-all `*` rule for the 'Unmatched links' dropdown.
+
+    A private catch-all (`1|||*|||label|||1`) stays in the main rows so its private flag is
+    never silently dropped on save.
+    """
+    if rules and rules[-1][0] and rules[-1][1] == "*" and not rules[-1][3]:
+        return rules[:-1], rules[-1][2]
+    return list(rules), None
+
+
+def load_labels():
+    browsers = load_browser_labels()
+    seen = set(browsers)
+    apps = [a for a in load_app_labels() if a not in seen]
+    return browsers + apps
 
 
 def load_rules():
@@ -150,11 +229,52 @@ class RulesApp(Gtk.Application):
         self.label = label
         self.no_open = no_open
 
-    def model_items(self, label):
-        return model_items(self.labels, label)
+    def model_items(self, label, browser_only=False):
+        return model_items(self.browser_labels if browser_only else self.labels, label)
+
+    def _reload_targets(self):
+        self.browser_labels = load_browser_labels()
+        browser_set = set(self.browser_labels)
+        app_list = [a for a in load_app_labels() if a not in browser_set]
+        self.app_labels = set(app_list)
+        self.labels = self.browser_labels + app_list
+
+    def _sync_priv_widget(self, rec):
+        idx = rec["drop"].get_selected()
+        cur = rec["items"][idx] if 0 <= idx < len(rec["items"]) else None
+        is_app = cur in self.app_labels
+        is_priv = rec["priv"].get_active()
+        if is_app:
+            # Never silently erase an existing private flag; leave it checked & uncheckable with a warning.
+            rec["priv"].set_sensitive(is_priv)
+            if is_priv:
+                rec["priv"].set_tooltip_text(
+                    "Local apps do not support private windows — uncheck Private or choose a browser."
+                )
+                rec["warn"].set_visible(True)
+                rec["warn"].set_tooltip_text(
+                    f"'{cur}' is a local app and cannot open private rules — pick a browser or uncheck Priv."
+                )
+            else:
+                rec["priv"].set_tooltip_text("Private windows apply to browsers only")
+                missing = bool(cur) and cur != NONE_FOUND and cur not in self.labels
+                rec["warn"].set_visible(missing)
+                if missing:
+                    rec["warn"].set_tooltip_text(
+                        f"Profile '{cur}' not found — pick another or Rescan profiles."
+                    )
+        else:
+            rec["priv"].set_sensitive(True)
+            rec["priv"].set_tooltip_text("Open matching links in a private / incognito window")
+            missing = bool(cur) and cur != NONE_FOUND and cur not in self.labels
+            rec["warn"].set_visible(missing)
+            if missing:
+                rec["warn"].set_tooltip_text(
+                    f"Profile '{cur}' not found — pick another or Rescan profiles."
+                )
 
     def do_activate(self):
-        self.labels = load_labels()
+        self._reload_targets()
         self.rows = []
 
         win = Gtk.ApplicationWindow(application=self, title="Browser Picker — Rules")
@@ -168,7 +288,7 @@ class RulesApp(Gtk.Application):
 
         help_lbl = Gtk.Label(xalign=0)
         help_lbl.set_markup(
-            "Links matching an <b>enabled</b> rule open directly in the chosen profile "
+            "Links matching an <b>enabled</b> rule open directly in the chosen profile or local app "
             "(no menu).\nPattern: plain text matches on path boundaries (covers a URL and "
             "its child paths); <b>*</b>/<b>?</b> = glob; <b>regex:</b> prefix = regex. "
             "First match wins — use ▲ ▼ to set priority."
@@ -201,16 +321,12 @@ class RulesApp(Gtk.Application):
         scroller.set_child(self.list_box)
         root.append(scroller)
 
-        # Default for unmatched links (a trailing catch-all "*" rule).
-        rules = load_rules()
-        default_label = None
-        if rules and rules[-1][0] and rules[-1][1] == "*":
-            default_label = rules[-1][2]
-            rules = rules[:-1]
+        # Default for unmatched links (a trailing non-private catch-all "*" rule).
+        rules, default_label = split_default_rule(load_rules())
 
         defbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         defbox.append(Gtk.Label(label="Unmatched links →", xalign=0))
-        ditems, dmissing = self.model_items(default_label)
+        ditems, dmissing = self.model_items(default_label, browser_only=True)
         self.default_items = [ASK] + ditems
         self.default_drop = Gtk.DropDown.new_from_strings(self.default_items)
         if default_label and default_label in ditems:
@@ -229,7 +345,7 @@ class RulesApp(Gtk.Application):
         add_btn = Gtk.Button(label="＋ Add rule")
         add_btn.connect("clicked", lambda _b: self.add_row(True, "", None))
         rescan_btn = Gtk.Button(label="⟳ Rescan profiles")
-        rescan_btn.set_tooltip_text("Re-detect installed browsers and profiles")
+        rescan_btn.set_tooltip_text("Re-detect installed browsers, profiles, and local apps")
         rescan_btn.connect("clicked", self.on_rescan)
         save_btn = Gtk.Button(label="Save")
         save_btn.add_css_class("suggested-action")
@@ -244,7 +360,8 @@ class RulesApp(Gtk.Application):
 
         prefill_entry = None
         if self.url:
-            self.add_row(True, self.pattern or default_pattern(self.url), self.label)
+            prefill_label = self.label or match_app_label(self.url)
+            self.add_row(True, self.pattern or default_pattern(self.url), prefill_label)
             prefill_entry = self.rows[-1]["entry"]
         for en, pat, lbl, priv in rules:
             self.add_row(en, pat, lbl, priv)
@@ -297,6 +414,9 @@ class RulesApp(Gtk.Application):
 
         rec = {"box": row, "check": check, "entry": entry, "drop": drop,
                "priv": priv, "warn": warn, "items": items}
+        self._sync_priv_widget(rec)
+        drop.connect("notify::selected", lambda _d, _p, r=rec: self._sync_priv_widget(r))
+        priv.connect("toggled", lambda _c, r=rec: self._sync_priv_widget(r))
         up.connect("clicked", lambda _b, r=rec: self.move_row(r, -1))
         down.connect("clicked", lambda _b, r=rec: self.move_row(r, +1))
         remove.connect("clicked", lambda _b, r=rec: self.remove_row(r))
@@ -347,24 +467,27 @@ class RulesApp(Gtk.Application):
             f.write("# Browsers + profiles offered by the picker.\n"
                     "# Format: Label|||command   (command may contain quotes; URL appended)\n")
             f.write("\n".join(lines) + "\n")
-        self.labels = load_labels()
+        self._reload_targets()
         for rec in self.rows:
             idx = rec["drop"].get_selected()
             cur = rec["items"][idx] if 0 <= idx < len(rec["items"]) else None
             if cur == NONE_FOUND:  # placeholder, not a real (missing) profile
                 cur = None
             rec["items"] = self._refresh_drop(rec["drop"], rec["items"], cur, rec["warn"])
-        # Default dropdown
+            self._sync_priv_widget(rec)
+        # Default dropdown (browsers only)
         didx = self.default_drop.get_selected()
         dcur = self.default_items[didx] if 0 <= didx < len(self.default_items) else ASK
-        ditems, dmissing = self.model_items(None if dcur in (ASK, NONE_FOUND) else dcur)
+        ditems, dmissing = self.model_items(None if dcur in (ASK, NONE_FOUND) else dcur, browser_only=True)
         self.default_items = [ASK] + ditems
         self.default_drop.set_model(Gtk.StringList.new(self.default_items))
         self.default_drop.set_selected(self.default_items.index(dcur) if dcur in self.default_items else 0)
         self.default_warn.set_visible(dmissing)
         if dmissing:
             self.default_warn.set_tooltip_text(f"Profile '{dcur}' not found.")
-        self.status.set_text(f"Rescan: +{added} new profile(s) ({len(self.labels)} total).")
+        self.status.set_text(
+            f"Rescan: +{added} new profile(s) ({len(self.browser_labels)} profiles, {len(self.app_labels)} local apps)."
+        )
 
     def on_save(self, _btn):
         os.makedirs(CONF, exist_ok=True)
@@ -385,11 +508,7 @@ class RulesApp(Gtk.Application):
             lbl = items[idx]
             if lbl not in self.labels:
                 missing += 1
-            en = "1" if r["check"].get_active() else "0"
-            if r["priv"].get_active():
-                lines.append(f"{en}|||{pat}|||{lbl}|||1")
-            else:
-                lines.append(f"{en}|||{pat}|||{lbl}")
+            lines.append(format_rule_line(r["check"].get_active(), pat, lbl, r["priv"].get_active()))
             n += 1
         # Catch-all default for unmatched links.
         didx = self.default_drop.get_selected()

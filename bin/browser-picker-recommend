@@ -249,14 +249,17 @@ def suggestion_options(events, host, segs, threshold_n):
     return out[:3]
 
 
-def rank_labels(labels, events, host, segs):
+def rank_labels(labels, events, host, segs, app_priorities=None, demote_global=None):
     """Order `labels` for a link on (host, segs), most-likely first.
 
     Sort key (all descending): picks under the same first path segment, then picks on the same
-    host, then total picks anywhere. Python's stable sort keeps browsers.conf order for ties
-    (including profiles you've never used), so the list only ever *promotes* what you use.
+    host, then URL-matched native/custom app priority (web apps stay at 0 and ignore cross-host
+    global picks so they don't outrank your default browser on unvisited sites), then total
+    picks anywhere. Python's stable sort keeps input order for ties.
     """
     seg1 = segs[:1] if segs else []
+    prios = app_priorities or {}
+    no_global = demote_global or ()
     stats = {l: [0, 0, 0] for l in labels}  # [under-first-segment, same-host, total]
     for e in events:
         s = stats.get(e.get("label"))
@@ -267,7 +270,15 @@ def rank_labels(labels, events, host, segs):
             s[1] += 1
             if _under(host, seg1, e):
                 s[0] += 1
-    return sorted(labels, key=lambda l: (-stats[l][0], -stats[l][1], -stats[l][2]))
+    return sorted(
+        labels,
+        key=lambda l: (
+            -stats[l][0],
+            -stats[l][1],
+            -prios.get(l, 0),
+            0 if l in no_global else -stats[l][2],
+        ),
+    )
 
 
 def browser_labels():
@@ -352,6 +363,18 @@ def _opt(argv, name):
     return None
 
 
+def _opts(argv, name):
+    out = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == name and i + 1 < len(argv):
+            out.append(argv[i + 1])
+            i += 2
+        else:
+            i += 1
+    return out
+
+
 def main(argv):
     if not argv:
         return 0
@@ -383,9 +406,36 @@ def main(argv):
         return 0
     if cmd == "order":
         url = _opt(argv, "--url")
-        labels = browser_labels()
+        app_labels = _opts(argv, "--app")
+        webapp_labels = _opts(argv, "--webapp")
+        app_priorities = {}
+        labels = []
+        seen = set()
+        for l in app_labels:
+            if l not in seen:
+                labels.append(l)
+                seen.add(l)
+            app_priorities[l] = max(app_priorities.get(l, 0), 1)
+        for l in browser_labels():
+            if l not in seen:
+                labels.append(l)
+                seen.add(l)
+        for l in webapp_labels:
+            if l not in seen:
+                labels.append(l)
+                seen.add(l)
         host, segs = url_parts(url) if url else (None, [])
-        ranked = rank_labels(labels, load_store().get("events", []), host, segs) if host else labels
+        if host:
+            ranked = rank_labels(
+                labels,
+                load_store().get("events", []),
+                host,
+                segs,
+                app_priorities,
+                demote_global=set(webapp_labels),
+            )
+        else:
+            ranked = labels
         if ranked:
             sys.stdout.write("\n".join(ranked) + "\n")
         return 0

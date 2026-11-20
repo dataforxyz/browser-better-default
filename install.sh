@@ -55,10 +55,11 @@ esac
 mkdir -p "$BIN" "$APPS" "$CFG"
 
 # Executables: symlinked so edits in the repo go live immediately.
-ln -sf "$REPO/bin/browser-picker"           "$BIN/browser-picker"
-ln -sf "$REPO/bin/browser-picker-rules"     "$BIN/browser-picker-rules"
-ln -sf "$REPO/bin/browser-picker-recommend" "$BIN/browser-picker-recommend"
-ln -sf "$REPO/bin/browser-picker-profiles"  "$BIN/browser-picker-profiles"
+ln -sf "$REPO/bin/browser-picker"             "$BIN/browser-picker"
+ln -sf "$REPO/bin/browser-picker-apps"        "$BIN/browser-picker-apps"
+ln -sf "$REPO/bin/browser-picker-rules"       "$BIN/browser-picker-rules"
+ln -sf "$REPO/bin/browser-picker-recommend"   "$BIN/browser-picker-recommend"
+ln -sf "$REPO/bin/browser-picker-profiles"    "$BIN/browser-picker-profiles"
 ln -sf "$REPO/bin/browser-picker-menu-select" "$BIN/browser-picker-menu-select"
 
 # Desktop entries: expand @BINDIR@ to the absolute bin path (xdg needs an abs Exec).
@@ -70,6 +71,7 @@ update-desktop-database "$APPS" 2>/dev/null || true
 # Seed config from examples without clobbering an existing setup.
 [ -f "$CFG/browsers.conf" ] || cp "$REPO/config/browsers.conf.example" "$CFG/browsers.conf"
 [ -f "$CFG/rules.conf" ]    || cp "$REPO/config/rules.conf.example"    "$CFG/rules.conf"
+[ -f "$CFG/apps.conf" ]     || cp "$REPO/config/apps.conf.example"     "$CFG/apps.conf"
 
 # Make the picker the default for web links.
 command -v xdg-settings >/dev/null 2>&1 && \

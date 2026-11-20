@@ -8,6 +8,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   echo "== shellcheck =="
   shellcheck -S warning \
     "$ROOT/bin/browser-picker" \
+    "$ROOT/bin/browser-picker-menu-select" \
     "$ROOT/install.sh" \
     "$ROOT/extension/install-bridge.sh" \
     "$HERE"/*.sh
@@ -16,10 +17,11 @@ else
 fi
 
 echo "== bash syntax =="
-bash -n "$ROOT/bin/browser-picker" "$ROOT/install.sh" "$ROOT/extension/install-bridge.sh"
+bash -n "$ROOT/bin/browser-picker" "$ROOT/bin/browser-picker-menu-select" "$ROOT/install.sh" "$ROOT/extension/install-bridge.sh"
 
 echo "== python compile =="
 python3 -m py_compile \
+  "$ROOT/bin/browser-picker-apps" \
   "$ROOT/bin/browser-picker-rules" \
   "$ROOT/bin/browser-picker-recommend" \
   "$ROOT/bin/browser-picker-profiles" \
@@ -27,8 +29,10 @@ python3 -m py_compile \
 
 echo "== bash unit tests =="
 bash "$HERE/test_matching.sh"
+bash "$HERE/test_picker_apps.sh"
 
 echo "== python unit tests =="
+python3 "$HERE/test_apps.py"
 python3 "$HERE/test_rules.py"
 python3 "$HERE/test_recommend.py"
 
