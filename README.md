@@ -1,8 +1,13 @@
 # browser-better-default
 
-A Linux default-browser replacement that pops up a **menu of every browser + profile**
-each time you open a link — with **smart-default rules** so chosen sites skip the menu and
-open directly in the right profile.
+A Linux link picker that lets you choose a **browser profile, desktop app, or installed
+web app**. Set smart defaults to open recurring links directly in your preferred app
+or profile.
+
+**Open T3 Code thread links in the desktop app.** Click an `app.t3.codes` share link
+and choose **T3 Code** to jump to the exact thread, including delegated threads on
+linked environments. The picker also offers installed apps for supported links like
+Spotify tracks and Zoom meetings, plus matching Omarchy and Chromium web apps.
 
 Built for [Omarchy Quattro](https://omarchy.org) / Hyprland with its native menu, and supports
 [Walker](https://github.com/abenz1267/walker) and other `dmenu`-style menus on other desktops.

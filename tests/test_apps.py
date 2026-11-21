@@ -45,6 +45,14 @@ def conv(fn, url, scheme):
 
 
 # T3 Code
+delegated_id = "thread%3Adelegated-task%3Acommand%3Amcp%3Aexample%3Adelegate-task%3Areview"
+canonical_id = "thread%3Adelegated-task%3Acommand%253Amcp%253Aexample%253Adelegate-task%253Areview"
+for segment in (delegated_id, canonical_id):
+    check(
+        conv(bpapps._convert_t3code, f"https://app.t3.codes/threads/env-1/{segment}", "t3code")
+        == f"t3code://threads/env-1/{canonical_id}",
+        "t3code uses the stored delegated thread ID",
+    )
 check(
     conv(bpapps._convert_t3code, "https://app.t3.codes/threads/env-1/thread-2", "t3code")
     == "t3code://threads/env-1/thread-2",
