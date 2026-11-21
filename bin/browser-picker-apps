@@ -987,6 +987,18 @@ def scan_desktop_entries(app_dirs=None, mimeapps_defaults=None, mimeapps_added=N
 
 # Matches T3 Code's packages/shared/src/promptLinks.ts (promptLinkAppPath / promptLinkDeepLink)
 # and apps/desktop/src/app/DesktopClerk.ts (openAppLink).
+def _t3_thread_segment(segment):
+    # Older hosted links encode an unescaped delegation command. T3 stores
+    # that command percent-escaped inside the thread ID, and the desktop
+    # router decodes the URL segment once before looking the ID up.
+    prefix = "thread:delegated-task:"
+    thread_id = urllib.parse.unquote(segment)
+    if thread_id.startswith(prefix + "command:"):
+        command = thread_id[len(prefix):]
+        return urllib.parse.quote(prefix + urllib.parse.quote(command, safe=""), safe="")
+    return segment
+
+
 def _convert_t3code(url, parsed, scheme):
     host = normalize_host(parsed.netloc)
     if host != "app.t3.codes":
@@ -997,12 +1009,12 @@ def _convert_t3code(url, parsed, scheme):
         return f"{scheme}://new{q}"
     if segs and segs[0] == "threads":
         if len(segs) == 3:
-            return f"{scheme}://threads/{segs[1]}/{segs[2]}{q}"
+            return f"{scheme}://threads/{segs[1]}/{_t3_thread_segment(segs[2])}{q}"
         return None
     if len(segs) == 2 and segs[0].lower() not in T3_RESERVED:
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         if "prompt" in params or UUID_RE.match(segs[0]):
-            return f"{scheme}://threads/{segs[0]}/{segs[1]}{q}"
+            return f"{scheme}://threads/{segs[0]}/{_t3_thread_segment(segs[1])}{q}"
     return None
 
 
