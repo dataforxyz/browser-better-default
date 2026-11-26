@@ -13,6 +13,12 @@ Item {
     property bool busy: false
     property bool dirty: false
     property bool autosave: true
+    property bool onboardingSeen: false
+    property var onboardingSelection: ({})
+    readonly property var onboardingCandidates: {
+        const enabledPatterns = new Set(draftRules.filter(rule => rule.enabled).map(rule => rule.pattern.trim()));
+        return rawSuggestions.filter(item => item.detected && !enabledPatterns.has(item.pattern));
+    }
     property bool allowAutosave: true
     property int editingPatternUid: -1
     // Scoped Omarchy theme surface — defaults track qs.Commons live and can be
@@ -112,6 +118,7 @@ Item {
     signal sortChosen(string order)
     signal autosaveChosen(bool enabled)
     signal draftDiscarded()
+    signal onboardingDismissed()
     signal setupRequested(bool refreshOnly)
     signal traceRequested(string request)
 
@@ -159,6 +166,32 @@ Item {
             return;
         traceResult = result;
         traceError = error;
+    }
+
+    function dismissOnboarding() {
+        if (!onboardingSeen) {
+            onboardingSeen = true;
+            onboardingDismissed();
+        }
+    }
+
+    function toggleOnboardingApp(item) {
+        const next = Object.assign({}, onboardingSelection);
+        if (next["pattern:" + item.pattern] === item.label)
+            delete next["pattern:" + item.pattern];
+        else
+            next["pattern:" + item.pattern] = item.label;
+        onboardingSelection = next;
+    }
+
+    function addOnboardingApps() {
+        const chosen = onboardingCandidates.filter(item => onboardingSelection["pattern:" + item.pattern] === item.label);
+        if (!chosen.length || busy)
+            return;
+        if (!addSuggestionRules(chosen))
+            return;
+        dismissOnboarding();
+        appSetupPopup.close();
     }
 
     function traceStatus(status) {
@@ -514,6 +547,7 @@ Item {
             sortMode = doc.sort;
         if (wasFirstLoad)
             autosave = safeDoc.autosave !== false;
+        onboardingSeen = onboardingSeen || safeDoc.onboarding_seen === true;
         _hasLoadedDocument = true;
         _lastRevision = incomingRevision;
         _baselineRules = cloneRuleList(incomingRules);
@@ -1164,51 +1198,39 @@ Item {
         if (!foundRow)
             return ;
 
-        var pat = String(foundRow.pattern || "").trim();
-        var lbl = String(foundRow.label || "").trim();
-        var isPriv = !!foundRow.isPrivate;
-        if (pat === "" || lbl === "" || lbl === noneFoundLabel) {
-            statusMessage = "Enter a pattern and target before staging.";
-            statusIsWarning = true;
-            statusShowRulesLink = false;
-            return ;
-        }
-        if (isPriv && isAppTarget(lbl)) {
-            statusMessage = "'" + lbl + "' is a local app — turn off Private or choose a browser before staging.";
-            statusIsWarning = true;
-            statusShowRulesLink = false;
-            return ;
-        }
-        var next = draftRules.slice();
-        var matchedExisting = false;
-        for (var j = 0; j < next.length; j++) {
-            if (String(next[j].pattern || "").trim() === pat && next[j].label === lbl && next[j].isPrivate === isPriv) {
-                next[j] = Object.assign({
-                }, next[j], {
-                    "enabled": true
+        addSuggestionRules([{
+            pattern: foundRow.pattern, label: foundRow.label, private: foundRow.isPrivate
+        }], key);
+    }
+
+    function addSuggestionRules(candidates, suggestionKey) {
+        const next = draftRules.slice();
+        for (const candidate of candidates) {
+            const pattern = String(candidate.pattern || "").trim();
+            const label = String(candidate.label || "").trim();
+            const isPrivate = !!candidate["private"];
+            if (!pattern || !label || label === noneFoundLabel || invalidPatternReason(pattern)
+                    || (isPrivate && isAppTarget(label))) {
+                statusMessage = "Choose a valid pattern and target before adding the rule.";
+                statusIsWarning = true;
+                statusShowRulesLink = false;
+                return false;
+            }
+
+            const existing = next.findIndex(rule => rule.pattern.trim() === pattern
+                && rule.label === label && rule.isPrivate === isPrivate);
+            if (existing >= 0) {
+                next[existing] = Object.assign({}, next[existing], { enabled: true });
+            } else {
+                const fallback = next.findIndex(rule => rule.pattern.trim() === "*");
+                next.splice(fallback < 0 ? next.length : fallback, 0, {
+                    uid: _nextUid++, enabled: true, pattern, label, isPrivate
                 });
-                matchedExisting = true;
-                break;
             }
-        }
-        if (!matchedExisting) {
-            var insertAt = next.length;
-            for (var k = 0; k < next.length; k++) {
-                if (String(next[k].pattern || "").trim() === "*") {
-                    insertAt = k;
-                    break;
-                }
-            }
-            next.splice(insertAt, 0, {
-                "uid": _nextUid++,
-                "enabled": true,
-                "pattern": pat,
-                "label": lbl,
-                "isPrivate": isPriv
-            });
         }
         draftRules = next;
-        _stagedSuggestionKeys[key] = true;
+        if (suggestionKey)
+            _stagedSuggestionKeys[suggestionKey] = true;
         recomputeDirty();
         rebuildVisibleRules();
         rebuildSuggestions();
@@ -1216,6 +1238,7 @@ Item {
         statusMessage = "";
         statusIsWarning = false;
         statusShowRulesLink = true;
+        return true;
     }
 
     implicitWidth: Style.space(598)
@@ -1417,6 +1440,34 @@ Item {
                 onClicked: root.requestSave()
             }
 
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            visible: root.activeTab === "rules" && !root.onboardingSeen && root.onboardingCandidates.length > 0
+            spacing: Style.spacing.md
+            Text {
+                Layout.fillWidth: true
+                text: root.onboardingCandidates.some(item => item.label === "Zoom")
+                    ? "Set up links for Zoom and other detected apps?" : "Set up links for your installed apps?"
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+            }
+            Button {
+                text: "Choose apps"
+                bordered: true
+                focusable: true
+                enabled: !root.busy
+                onClicked: appSetupPopup.open()
+            }
+            Button {
+                text: "Skip"
+                focusable: true
+                onClicked: root.dismissOnboarding()
+            }
         }
 
         // 2. Rules search / sort / filter toolbar
@@ -2743,6 +2794,15 @@ Item {
             font.pixelSize: Style.font.caption
         }
 
+        Button {
+            visible: root.activeTab === "settings" && root.onboardingCandidates.length > 0
+            text: "Set up app links"
+            bordered: true
+            focusable: true
+            enabled: !root.busy
+            onClicked: appSetupPopup.open()
+        }
+
         PanelSectionHeader {
             visible: root.activeTab === "settings"
             Layout.fillWidth: true
@@ -2813,6 +2873,102 @@ Item {
 
         }
 
+    }
+
+    Controls.Popup {
+        id: appSetupPopup
+        anchors.centerIn: parent
+        width: Math.min(root.width - Style.space(24), Style.space(480))
+        height: Math.min(root.height - Style.space(24), Style.space(440))
+        padding: Style.space(14)
+        modal: true
+        focus: true
+        onAboutToShow: root.onboardingSelection = {}
+        background: BorderSurface {
+            color: root.popupBackground
+            borderSpec: Border.flat(root.accent, 1)
+            radius: Style.cornerRadius
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Style.spacing.md
+
+            PanelSectionHeader {
+                Layout.fillWidth: true
+                text: "Set up app links"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "Choose apps to open their matching links directly."
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+            }
+
+            ListView {
+                id: onboardingList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: Style.spacing.xs
+                model: root.onboardingCandidates
+                Controls.ScrollBar.vertical: Controls.ScrollBar {
+                    id: onboardingScroll
+                    anchors.right: onboardingList.right
+                    policy: onboardingList.contentHeight > onboardingList.height
+                        ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
+                }
+                delegate: RowLayout {
+                    required property var modelData
+                    width: onboardingList.width - (onboardingScroll.visible ? onboardingScroll.width + Style.spacing.xs : 0)
+                    SelectionCheck {
+                        checked: root.onboardingSelection["pattern:" + modelData.pattern] === modelData.label
+                        Accessible.name: modelData.label
+                        onClicked: root.toggleOnboardingApp(modelData)
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: modelData.title === modelData.pattern ? modelData.label : modelData.title
+                        textFormat: Text.PlainText
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        Layout.preferredWidth: Style.space(100)
+                        text: modelData.kind === "webapp" ? "Web app" : "Desktop app"
+                        textFormat: Text.PlainText
+                        color: Util.alpha(root.foreground, 0.7)
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Cancel"
+                    focusable: true
+                    onClicked: appSetupPopup.close()
+                }
+                Button {
+                    text: "Add selected rules"
+                    focusable: true
+                    bordered: true
+                    enabled: !root.busy && Object.keys(root.onboardingSelection).length > 0
+                    selected: enabled
+                    onClicked: root.addOnboardingApps()
+                }
+            }
+        }
     }
 
     FocusScope {

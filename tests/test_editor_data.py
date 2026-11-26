@@ -125,11 +125,12 @@ class EditorDataTest(unittest.TestCase):
         )
         self.assertEqual(
             set(data.keys()),
-            {"rules", "fallback", "browsers", "apps", "suggestions", "revision", "sort", "autosave"},
+            {"rules", "fallback", "browsers", "apps", "suggestions", "revision", "sort", "autosave", "onboarding_seen"},
         )
         self.assertEqual(data["rules"], [])
         self.assertEqual(data["sort"], "priority")
         self.assertIs(data["autosave"], True)
+        self.assertIs(data["onboarding_seen"], False)
         self.assertIsNone(data["fallback"])
         self.assertEqual(data["browsers"], [])
         self.assertEqual(data["apps"], [])
@@ -150,6 +151,12 @@ class EditorDataTest(unittest.TestCase):
         self.assertIs(json.loads(self._run("load").stdout)["autosave"], False)
         self.assertEqual(self._run("autosave", "on").returncode, 0)
         self.assertIs(json.loads(self._run("load").stdout)["autosave"], True)
+        self.assertFalse(os.path.exists(os.path.join(self.conf_dir, "rules.conf")))
+
+    def test_app_onboarding_dismissal_persists_without_writing_rules(self):
+        self.assertIs(json.loads(self._run("load").stdout)["onboarding_seen"], False)
+        self.assertEqual(self._run("onboarding").returncode, 0)
+        self.assertIs(json.loads(self._run("load").stdout)["onboarding_seen"], True)
         self.assertFalse(os.path.exists(os.path.join(self.conf_dir, "rules.conf")))
 
     def test_url_trace_uses_draft_priority_and_never_writes_rules(self):

@@ -289,7 +289,7 @@ def recommended_defaults(browsers, apps_mod, registry, recommender=None):
                      and apps_mod.url_matches(pattern, event["url"])]
             timestamp = max((event["ts"] for event in picks
                              if type(event.get("ts")) is int), default=0)
-            yield pattern, label, False, title, "Detected app", "desktop", len(picks), timestamp
+            yield pattern, label, False, title, "Detected app", "desktop", len(picks), timestamp, True
 
     learned_webapps = set()
     for pattern, label, private, count, url, timestamp in learned:
@@ -314,7 +314,7 @@ def recommended_defaults(browsers, apps_mod, registry, recommender=None):
             kind = "webapp" if match["kind"] == "webapp" else "desktop"
             if kind == "webapp":
                 learned_webapps.add(label)
-        yield pattern, label, private, pattern, f"Chosen {count} times", kind, count, timestamp
+        yield pattern, label, private, pattern, f"Chosen {count} times", kind, count, timestamp, False
 
     if apps_mod is not None and registry is not None:
         for app in registry["webapps"]:
@@ -323,12 +323,12 @@ def recommended_defaults(browsers, apps_mod, registry, recommender=None):
                 continue
             if any(match["label"] == label and match["kind"] == "webapp"
                    for match in apps_mod.match_url(f"https://{host}/", registry)):
-                yield host, label, False, host, "Installed web app", "webapp", 0, 0
+                yield host, label, False, host, "Installed web app", "webapp", 0, 0, True
 
 
 def build_suggestions(browsers, apps_mod, registry, recommender=None):
     out = []
-    for pattern, label, private, title, reason, kind, count, timestamp in recommended_defaults(
+    for pattern, label, private, title, reason, kind, count, timestamp, detected in recommended_defaults(
         browsers, apps_mod, registry, recommender
     ):
         out.append(
@@ -341,6 +341,7 @@ def build_suggestions(browsers, apps_mod, registry, recommender=None):
                 "kind": kind,
                 "uses": count,
                 "last_used": timestamp,
+                "detected": detected,
             }
         )
     return out
@@ -358,6 +359,7 @@ def _compose_state(raw_rules, revision, browsers, apps, apps_mod, registry):
         "revision": revision,
         "sort": load_sort(),
         "autosave": load_autosave(),
+        "onboarding_seen": os.path.isfile(os.path.join(config_dir(), "editor-onboarding")),
     }
 
 
@@ -710,6 +712,9 @@ def main(argv):
                 raise ValidationError("Autosave must be on or off.")
             atomic_write_text(os.path.join(config_dir(), "editor-autosave"), argv[1] + "\n")
             result = {"autosave": argv[1] == "on"}
+        elif cmd == "onboarding" and len(argv) == 1:
+            atomic_write_text(os.path.join(config_dir(), "editor-onboarding"), "seen\n")
+            result = {"onboarding_seen": True}
         elif cmd == "trace" and len(argv) == 1:
             result = trace_url(sys.stdin.readline())
         else:

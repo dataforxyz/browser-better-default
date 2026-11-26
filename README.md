@@ -54,6 +54,8 @@ and remembers the decisions you want to make permanent.
   Completed rule edits autosave by default. Turn **Autosave** off in **Settings**
   to save changes manually. New browser profiles are auto-added when the picker
   opens or when you rescan targets.
+- **App setup** — choose detected apps such as Zoom and installed web apps to add
+  their link rules together. Reopen it from **Settings → Set up app links**.
 - **Routes** `http`, `https`, and `mailto`.
 
 ## Install

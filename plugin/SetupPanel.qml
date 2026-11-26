@@ -13,6 +13,7 @@ Item {
   property string errorText: ""
   property string pendingSort: ""
   property string pendingAutosave: ""
+  property bool pendingOnboarding: false
   property string pendingTrace: ""
   property string activeTrace: ""
   property var document: null
@@ -91,25 +92,28 @@ Item {
     }
   }
 
-  function writeSort() {
-    if (sortWorker.running || (pendingSort === "" && pendingAutosave === ""))
+  function writePreference() {
+    if (preferenceWorker.running || (pendingSort === "" && pendingAutosave === "" && !pendingOnboarding))
       return
     if (pendingAutosave !== "") {
-      sortWorker.command = [backend, "autosave", pendingAutosave]
+      preferenceWorker.command = [backend, "autosave", pendingAutosave]
       pendingAutosave = ""
-    } else {
-      sortWorker.command = [backend, "sort", pendingSort]
+    } else if (pendingSort !== "") {
+      preferenceWorker.command = [backend, "sort", pendingSort]
       pendingSort = ""
+    } else {
+      preferenceWorker.command = [backend, "onboarding"]
+      pendingOnboarding = false
     }
-    sortWorker.running = true
+    preferenceWorker.running = true
   }
 
   Process {
-    id: sortWorker
+    id: preferenceWorker
     onExited: function(code, status) {
       if (code !== 0 || status !== 0)
         root.statusKey = "preferenceSaveFailed"
-      Qt.callLater(root.writeSort)
+      Qt.callLater(root.writePreference)
     }
   }
 
@@ -202,13 +206,17 @@ Item {
         busy: dataWorker.running || setup.running
         onAutosaveChosen: enabled => {
           root.pendingAutosave = enabled ? "on" : "off"
-          root.writeSort()
+          root.writePreference()
+        }
+        onOnboardingDismissed: {
+          root.pendingOnboarding = true
+          root.writePreference()
         }
         onDraftDiscarded: root.pendingUrl = ""
         onSetupRequested: refreshOnly => root.install(refreshOnly)
         onSortChosen: order => {
           root.pendingSort = order
-          root.writeSort()
+          root.writePreference()
         }
         onTraceRequested: request => {
           root.pendingTrace = request
