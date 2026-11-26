@@ -291,6 +291,7 @@ def recommended_defaults(browsers, apps_mod, registry, recommender=None):
                              if type(event.get("ts")) is int), default=0)
             yield pattern, label, False, title, "Detected app", "desktop", len(picks), timestamp
 
+    learned_webapps = set()
     for pattern, label, private, count, url, timestamp in learned:
         private = bool(private)
         kind = "browser"
@@ -311,7 +312,18 @@ def recommended_defaults(browsers, apps_mod, registry, recommender=None):
             if not match:
                 continue
             kind = "webapp" if match["kind"] == "webapp" else "desktop"
+            if kind == "webapp":
+                learned_webapps.add(label)
         yield pattern, label, private, pattern, f"Chosen {count} times", kind, count, timestamp
+
+    if apps_mod is not None and registry is not None:
+        for app in registry["webapps"]:
+            label, host = app["label"], app["host"]
+            if label in browser_set or label in learned_webapps:
+                continue
+            if any(match["label"] == label and match["kind"] == "webapp"
+                   for match in apps_mod.match_url(f"https://{host}/", registry)):
+                yield host, label, False, host, "Installed web app", "webapp", 0, 0
 
 
 def build_suggestions(browsers, apps_mod, registry, recommender=None):

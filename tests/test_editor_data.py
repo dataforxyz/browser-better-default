@@ -353,6 +353,9 @@ class EditorDataTest(unittest.TestCase):
         with open(os.path.join(self.xdg_data, "applications", "Notes.desktop"), "w", encoding="utf-8") as f:
             f.write("[Desktop Entry]\nType=Application\nName=Notes\n"
                     "Exec=omarchy-launch-webapp https://notes.example.com/\n")
+        with open(os.path.join(self.xdg_data, "applications", "Calendar.desktop"), "w", encoding="utf-8") as f:
+            f.write("[Desktop Entry]\nType=Application\nName=Calendar\n"
+                    "Exec=omarchy-launch-webapp https://calendar.example.com/\n")
         history["events"].extend(
             {"url": f"https://notes.example.com/docs/{i}", "host": "notes.example.com",
              "segs": ["docs", str(i)], "label": "Notes — Web App", "ts": 20 + i}
@@ -394,6 +397,10 @@ class EditorDataTest(unittest.TestCase):
         self.assertIn(("app.t3.codes/threads/ws1", "T3 Code", False), by_key)
         webapp = by_key[("notes.example.com/docs", "Notes — Web App", False)]
         self.assertEqual((webapp["kind"], webapp["uses"], webapp["last_used"]), ("webapp", 2, 21))
+        detected = by_key[("calendar.example.com", "Calendar — Web App", False)]
+        self.assertEqual((detected["kind"], detected["uses"], detected["reason"]),
+                         ("webapp", 0, "Installed web app"))
+        self.assertNotIn(("notes.example.com", "Notes — Web App", False), by_key)
 
         # Private local-app habit and unknown app habit excluded
         self.assertNotIn(("app.t3.codes/new", "T3 Code", True), by_key)
