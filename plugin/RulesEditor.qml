@@ -31,6 +31,10 @@ Item {
     property string searchQuery: ""
     property string sortMode: "site" // "site" | "priority" | "pattern" | "target"
     property string filterMode: "all" // "all" | "enabled" | "disabled" | "private"
+    property var expandedSites: ({})
+    property bool selectingRules: false
+    property var selectedRules: ({})
+    readonly property int selectedRuleCount: draftRules.filter(rule => selectedRules[rule.uid]).length
     readonly property bool canReorder: sortMode === "priority" && filterMode === "all" && searchQuery.trim() === ""
     // Draft and document state
     property var browserTargets: []
@@ -84,6 +88,54 @@ Item {
     signal rescanRequested()
     signal focusSyncRequested()
     signal draftSynced()
+
+    function toggleSite(site) {
+        const next = Object.assign({}, expandedSites);
+        next[site] = !expandedSites[site];
+        expandedSites = next;
+    }
+
+    function toggleSelection(uids) {
+        const next = Object.assign({}, selectedRules);
+        const select = !uids.every(uid => next[uid]);
+        for (const uid of uids) {
+            if (select)
+                next[uid] = true;
+            else
+                delete next[uid];
+        }
+        selectedRules = next;
+    }
+
+    function visibleSiteUids(site) {
+        const uids = [];
+        for (let i = 0; i < visibleRulesModel.count; i++) {
+            const rule = visibleRulesModel.get(i);
+            if (rule.siteName === site)
+                uids.push(rule.uid);
+        }
+        return uids;
+    }
+
+    function applyBulk(action, value) {
+        if (busy || selectedRuleCount === 0)
+            return;
+        if (action === "target" && isAppTarget(value)
+                && draftRules.some(rule => selectedRules[rule.uid] && rule.isPrivate)) {
+            statusMessage = "Private rules need a browser target.";
+            statusIsWarning = true;
+            return;
+        }
+        draftRules = action === "remove"
+            ? draftRules.filter(rule => !selectedRules[rule.uid])
+            : draftRules.map(rule => !selectedRules[rule.uid] ? rule : Object.assign({}, rule,
+                action === "target" ? { label: value } : { enabled: value }));
+        selectedRules = {};
+        selectingRules = false;
+        recomputeDirty();
+        rebuildVisibleRules();
+        rebuildSuggestions();
+    }
 
     function beginRule(pattern, label) {
         var pat = pattern !== undefined && pattern !== null ? String(pattern) : "";
@@ -347,6 +399,8 @@ Item {
         _baselineFallback = incomingFallback;
         _baselineSignature = incomingSig;
         if (shouldReplaceDraft) {
+            selectedRules = {};
+            selectingRules = false;
             var savedSuccess = _awaitingSave;
             _awaitingSave = false;
             _rescanInFlight = false;
@@ -597,6 +651,9 @@ Item {
     }
 
     function _insertNewRule(pattern, label, selectAll) {
+        const site = ruleSite(pattern);
+        if (pattern.trim() !== "" && !expandedSites[site])
+            toggleSite(site);
         var chosenLabel = label !== "" ? label : (allTargets.length > 0 ? allTargets[0] : "");
         var rule = {
             "uid": _nextUid++,
@@ -785,6 +842,8 @@ Item {
             return ;
 
         draftRules = cloneRuleList(_baselineRules);
+        selectedRules = {};
+        selectingRules = false;
         draftFallback = _baselineFallback;
         _stagedSuggestionKeys = ({
         });
@@ -1085,6 +1144,18 @@ Item {
             }
 
             Button {
+                visible: root.activeTab === "rules"
+                text: root.selectingRules ? "Done" : "Select"
+                tooltipText: "Select rules for bulk changes"
+                bordered: true
+                focusable: true
+                onClicked: {
+                    root.selectingRules = !root.selectingRules;
+                    root.selectedRules = {};
+                }
+            }
+
+            Button {
                 iconText: "󰐕"
                 text: "Add"
                 tooltipText: "Add a new rule (Ctrl+N)"
@@ -1118,6 +1189,39 @@ Item {
         }
 
         // 2. Rules search / sort / filter toolbar
+        RowLayout {
+            Layout.fillWidth: true
+            visible: root.activeTab === "rules" && root.selectingRules
+            spacing: Style.spacing.sm
+
+            Text {
+                visible: root.selectingRules
+                text: root.selectedRuleCount + " selected"
+                textFormat: Text.PlainText
+                color: root.muted
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+            }
+            Item { Layout.fillWidth: true }
+            TargetPicker {
+                visible: root.selectedRuleCount > 0 && root.selectingRules
+                enabled: !root.busy
+                placeholderText: "Set target"
+                options: root.ruleTargetOptions("")
+                onPicked: value => root.applyBulk("target", value)
+            }
+            Repeater {
+                model: root.selectedRuleCount > 0 && root.selectingRules ? ["Enable", "Disable", "Remove"] : []
+                Button {
+                    required property string modelData
+                    text: modelData
+                    focusable: true
+                    enabled: !root.busy
+                    onClicked: root.applyBulk(modelData === "Remove" ? "remove" : "enable", modelData === "Enable")
+                }
+            }
+        }
+
         RowLayout {
             Layout.fillWidth: true
             visible: root.activeTab === "rules"
@@ -1371,6 +1475,8 @@ Item {
                     required property bool showHeader
                     required property int groupCount
                     required property bool endsGroup
+                    readonly property bool groupOpen: groupCount < 2 || root.searchQuery.trim() !== ""
+                        || root.filterMode !== "all" || !!root.expandedSites[siteName]
                     readonly property bool isApp: root.isAppTarget(label)
                     readonly property bool targetMissing: root.isMissingTarget(label)
                     readonly property bool invalidPrivate: isApp && isPrivate
@@ -1390,7 +1496,10 @@ Item {
                         }
                     }
 
-                    Component.onCompleted: Qt.callLater(tryClaimFocus)
+                    Component.onCompleted: {
+                        if (root._pendingFocusUid === uid)
+                            tryClaimFocus();
+                    }
                     width: rulesList.width
                     spacing: 0
 
@@ -1423,12 +1532,15 @@ Item {
                             anchors.bottomMargin: Style.spacing.xxs
                             spacing: Style.spacing.md
 
-                            PanelSectionHeader {
+                            Button {
                                 Layout.fillWidth: true
-                                text: rowDelegate.siteName
+                                text: (rowDelegate.groupOpen ? "▾  " : "▸  ") + rowDelegate.siteName
                                 foreground: root.foreground
                                 fontFamily: root.fontFamily
-                                elide: Text.ElideRight
+                                leftAlign: true
+                                focusable: true
+                                enabled: root.searchQuery.trim() === "" && root.filterMode === "all"
+                                onClicked: root.toggleSite(rowDelegate.siteName)
                             }
 
                             Text {
@@ -1437,6 +1549,14 @@ Item {
                                 color: Util.alpha(root.foreground, 0.48)
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
+                            }
+
+                            Button {
+                                visible: root.selectingRules
+                                focusable: true
+                                text: root.visibleSiteUids(rowDelegate.siteName).every(uid => root.selectedRules[uid])
+                                    ? "Clear group" : "Select group"
+                                onClicked: root.toggleSelection(root.visibleSiteUids(rowDelegate.siteName))
                             }
 
                         }
@@ -1448,7 +1568,8 @@ Item {
                         id: ruleSurface
 
                         width: parent.width
-                        height: Style.space(34)
+                        visible: rowDelegate.groupOpen
+                        height: visible ? Style.space(34) : 0
                         color: Util.alpha(root.foreground, rowHover.hovered ? 0.07 : (rowDelegate.groupCount > 1 ? 0.035 : 0))
 
                         Rectangle {
@@ -1469,6 +1590,14 @@ Item {
                             anchors.leftMargin: Style.spacing.xxs
                             anchors.rightMargin: Style.spacing.xxs
                             spacing: Style.spacing.md
+
+                            Button {
+                                visible: root.selectingRules
+                                text: root.selectedRules[rowDelegate.uid] ? "☑" : "☐"
+                                tooltipText: "Select this rule for bulk changes"
+                                focusable: true
+                                onClicked: root.toggleSelection([rowDelegate.uid])
+                            }
 
                             // Actual priority badge (#1 matches first)
                             Item {
@@ -1641,6 +1770,7 @@ Item {
                     }
 
                     PanelSeparator {
+                        visible: rowDelegate.groupOpen
                         width: parent.width
                         foreground: root.foreground
                         strength: 0.08
@@ -1648,7 +1778,7 @@ Item {
 
                     Item {
                         width: parent.width
-                        height: rowDelegate.endsGroup ? Style.space(12) : 0
+                        height: rowDelegate.endsGroup && rowDelegate.groupOpen ? Style.space(12) : 0
                     }
 
                 }
