@@ -2322,16 +2322,17 @@ Item {
                     if (root.width <= 0 || root.height <= 0)
                         return ;
 
-                    var pos = trigger.mapToItem(root, 0, 0);
-                    var maxW = Math.max(trigger.width, root.width - Style.spacing.xxl * 2);
-                    var desiredW = Math.min(Math.max(trigger.width, Style.space(236)), maxW);
-                    popup.width = desiredW;
-                    var rightOverflow = (pos.x + desiredW) - (root.width - Style.spacing.lg);
-                    popup.x = rightOverflow > 0 ? Math.max(-pos.x + Style.spacing.lg, -rightOverflow) : 0;
-                    var popH = popup.implicitHeight;
-                    var spaceBelow = root.height - (pos.y + trigger.height) - Style.spacing.lg;
-                    var spaceAbove = pos.y - Style.spacing.lg;
-                    popup.y = (spaceBelow < popH && spaceAbove > spaceBelow) ? -popH - Style.spacing.xxs : trigger.height + Style.spacing.xxs;
+                    const position = trigger.mapToItem(root, 0, 0);
+                    popup.width = Math.max(trigger.width, Math.min(Style.space(236), root.width));
+                    // Wide fields keep both edges aligned. Narrow fields may
+                    // expand toward whichever side has room.
+                    popup.x = Math.min(0, root.width - position.x - popup.width);
+                    const gap = Style.spacing.xxs;
+                    const below = Math.max(1, root.height - position.y - trigger.height - gap);
+                    const above = Math.max(1, position.y - gap);
+                    const openAbove = below < popup.implicitHeight && above > below;
+                    popup.height = Math.min(popup.implicitHeight, openAbove ? above : below);
+                    popup.y = openAbove ? -popup.height - gap : trigger.height + gap;
                 }
                 onOpened: {
                     optionList.currentIndex = Math.max(0, optionList.indexOfValue(picker.value));
@@ -2391,6 +2392,18 @@ Item {
                         }
                     }
 
+                    Controls.ScrollBar.vertical: Controls.ScrollBar {
+                        id: optionScrollBar
+                        policy: optionList.contentHeight > optionList.height
+                            ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
+                        width: Style.space(9)
+                        padding: Style.space(2)
+                        contentItem: Rectangle {
+                            radius: width / 2
+                            color: Util.alpha(picker.foreground, optionScrollBar.pressed ? 0.8 : 0.48)
+                        }
+                    }
+
                     delegate: Rectangle {
                         id: optRow
 
@@ -2402,7 +2415,7 @@ Item {
                         readonly property bool isCurrent: index === optionList.currentIndex
                         readonly property bool isSelected: optValue === picker.value
 
-                        width: optionList.width
+                        width: optionList.width - (optionScrollBar.visible ? optionScrollBar.width : 0)
                         height: picker.popupRowHeight
                         color: isCurrent ? Style.hoverFillFor(picker.foreground, picker.accent) : (isSelected ? Style.selectedFillFor(picker.foreground, picker.accent) : "transparent")
 
