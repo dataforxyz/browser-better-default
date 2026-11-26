@@ -58,12 +58,13 @@ class EditorDataTest(unittest.TestCase):
             env.update(extra)
         return env
 
-    def _run(self, *args, env_extra=None):
+    def _run(self, *args, env_extra=None, input=None):
         return subprocess.run(
             [sys.executable, SCRIPT, *args],
             capture_output=True,
             text=True,
             env=self._env(env_extra),
+            input=input,
         )
 
     def _write_conf(self, filename, text):
@@ -140,6 +141,25 @@ class EditorDataTest(unittest.TestCase):
         self.assertEqual(json.loads(self._run("load").stdout)["sort"], "target")
         self.assertNotEqual(self._run("sort", "invalid").returncode, 0)
         self.assertEqual(json.loads(self._run("load").stdout)["sort"], "target")
+        self.assertFalse(os.path.exists(os.path.join(self.conf_dir, "rules.conf")))
+
+    def test_url_trace_uses_draft_priority_and_never_writes_rules(self):
+        self._write_conf("browsers.conf", "Firefox|||firefox\n")
+        self._install_fake_zoom_app()
+        rules = [
+            {"pattern": "127.0.0.1:3100", "enabled": False, "label": "Firefox", "private": False},
+            {"pattern": "*", "enabled": True, "label": "Zoom", "private": False},
+            {"pattern": "regex:[?&]tenant=test$", "enabled": True, "label": "Firefox", "private": True},
+            {"pattern": "http://127.0.0.1:3100/*", "enabled": True, "label": "Firefox", "private": False},
+        ]
+        payload = {"url": "http://127.0.0.1:3100/?tenant=test", "rules": rules, "fallback": "Firefox"}
+        proc = self._run("trace", input=json.dumps(payload))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["outcome"], "rule")
+        self.assertEqual([row["status"] for row in data["matches"]],
+                         ["disabled", "unsupported", "winner", "later", "later"])
+        self.assertTrue(data["matches"][-1]["fallback"])
         self.assertFalse(os.path.exists(os.path.join(self.conf_dir, "rules.conf")))
 
     def test_load_preserves_priority_private_catchall_and_stale_labels(self):

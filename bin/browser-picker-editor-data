@@ -32,8 +32,10 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
+import urllib.parse
 
 BROWSERS_HEADER = (
     "# Browsers + profiles offered by the picker.\n"
@@ -587,6 +589,67 @@ def _dump_compact_json(data):
     return json.dumps(data, separators=(",", ":"), ensure_ascii=use_ascii)
 
 
+def trace_url(raw_json):
+    payload = json.loads(raw_json)
+    url = payload["url"]
+    parsed = urllib.parse.urlsplit(url)
+    if not ((parsed.scheme in ("http", "https") and parsed.hostname)
+            or (parsed.scheme == "mailto" and parsed.path)):
+        raise ValidationError("Enter a complete URL.")
+
+    rules = list(payload["rules"])
+    fallback = payload.get("fallback")
+    if fallback:
+        rules.append({"enabled": True, "pattern": "*", "label": fallback, "private": False})
+    patterns = [rule["pattern"] for rule in rules]
+    if "\0" in url or any("\0" in pattern for pattern in patterns):
+        raise ValidationError("A URL or pattern contains a null character.")
+    picker = os.path.join(os.path.dirname(os.path.realpath(__file__)), "browser-picker")
+    script = """
+source "$1"
+IFS= read -r -d '' url
+i=0
+while IFS= read -r -d '' pattern; do
+    if [[ -n "$pattern" ]] && matches "$pattern" "$url"; then
+        printf '%s\\n' "$i"
+    fi
+    ((i += 1))
+done
+"""
+    matched = subprocess.run(
+        ["bash", "-c", script, "trace-url", picker],
+        input=url + "\0" + "".join(pattern + "\0" for pattern in patterns),
+        text=True, capture_output=True, check=True, timeout=3,
+    )
+    browsers, _apps, apps_mod, registry = load_targets()
+    matches = []
+    outcome = "picker"
+    stopped = False
+    for index in map(int, matched.stdout.splitlines()):
+        rule = rules[index]
+        label = rule["label"]
+        if not rule["enabled"]:
+            status = "disabled"
+        elif stopped:
+            status = "later"
+        else:
+            if label in browsers:
+                target = "match"
+            elif apps_mod and not rule["private"]:
+                target, _entry = apps_mod.resolve_for_label(label, url, registry)
+            else:
+                target = "unknown"
+            if target == "match":
+                outcome, status, stopped = "rule", "winner", True
+            elif target == "no_url":
+                status = "unsupported"
+            else:
+                status, stopped = "unavailable", True
+        matches.append({**rule, "priority": index + 1, "status": status,
+                        "fallback": bool(fallback and index == len(rules) - 1)})
+    return {"matches": matches, "outcome": outcome}
+
+
 def main(argv):
     try:
         if not argv:
@@ -611,6 +674,8 @@ def main(argv):
                 raise ValidationError("Invalid editor sort order.")
             atomic_write_text(os.path.join(config_dir(), "editor-sort"), argv[1] + "\n")
             result = {"sort": argv[1]}
+        elif cmd == "trace" and len(argv) == 1:
+            result = trace_url(sys.stdin.readline())
         else:
             raise ValidationError(
                 f"Unknown command '{cmd}'. Expected: load, rescan, save, or sort."

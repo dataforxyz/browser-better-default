@@ -14,6 +14,8 @@ Item {
   property string errorText: ""
   readonly property bool setupVisible: editor.activeTab === "settings"
   property string pendingSort: ""
+  property string pendingTrace: ""
+  property string activeTrace: ""
   property var document: null
   property var pendingRule: null
   property string pendingUrl: ""
@@ -107,6 +109,35 @@ Item {
     }
   }
 
+  function writeTrace() {
+    if (traceWorker.running || pendingTrace === "")
+      return
+    activeTrace = pendingTrace
+    pendingTrace = ""
+    traceWorker.command = [backend, "trace"]
+    traceWorker.running = true
+  }
+
+  Process {
+    id: traceWorker
+    stdinEnabled: true
+    onStarted: write(root.activeTrace + "\n")
+    stdout: StdioCollector { id: traceOutput }
+    stderr: StdioCollector { id: traceErrors }
+    onExited: function(code, status) {
+      let result = null
+      let error = ""
+      if (code === 0 && status === 0) {
+        try { result = JSON.parse(traceOutput.text) }
+        catch (_) { error = strings.t("invalidData") }
+      } else {
+        error = traceErrors.text.trim() || strings.t("failure")
+      }
+      editor.acceptTrace(root.activeTrace, result, error)
+      Qt.callLater(root.writeTrace)
+    }
+  }
+
   Process {
     id: dataWorker
     stdout: StdioCollector { id: dataOutput }
@@ -189,6 +220,10 @@ Item {
         onSortChosen: order => {
           root.pendingSort = order
           root.writeSort()
+        }
+        onTraceRequested: request => {
+          root.pendingTrace = request
+          root.writeTrace()
         }
         onRescanRequested: {
           if (editor.dirty) {

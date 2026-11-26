@@ -29,6 +29,12 @@ Item {
     property string activeTab: "rules"
     // "rules" | "suggestions"
     property string searchQuery: ""
+    readonly property bool tracingUrl: /^(https?:\/\/\S+|mailto:\S+)$/i.test(searchQuery.trim())
+    readonly property string traceRequest: tracingUrl
+        ? JSON.stringify(Object.assign(buildSavePayload(draftRules, draftFallback), { url: searchQuery.trim() }))
+        : ""
+    property var traceResult: null
+    property string traceError: ""
     property string sortMode: "priority" // "site" | "priority" | "pattern" | "target"
     property bool groupBySite: true
     property string filterMode: "all" // "all" | "enabled" | "disabled" | "private"
@@ -91,6 +97,38 @@ Item {
     signal draftSynced()
     signal sortChosen(string order)
     signal setupRequested(bool refreshOnly)
+    signal traceRequested(string request)
+
+    onTraceRequestChanged: {
+        traceResult = null;
+        traceError = "";
+        traceDelay.stop();
+        if (traceRequest)
+            traceDelay.start();
+    }
+
+    Timer {
+        id: traceDelay
+        interval: 240
+        onTriggered: root.traceRequested(root.traceRequest)
+    }
+
+    function acceptTrace(request, result, error) {
+        if (request !== traceRequest)
+            return;
+        traceResult = result;
+        traceError = error;
+    }
+
+    function traceStatus(status) {
+        switch (status) {
+        case "winner": return "Opens here";
+        case "disabled": return "Disabled";
+        case "unsupported": return "App skips this URL";
+        case "unavailable": return "Target unavailable · chooser opens";
+        default: return "Not reached";
+        }
+    }
 
     function chooseSort(order) {
         if (sortMode === order)
@@ -1190,7 +1228,7 @@ Item {
         // 2. Rules search / sort / filter toolbar
         RowLayout {
             Layout.fillWidth: true
-            visible: root.activeTab === "rules" && root.selectingRules
+            visible: root.activeTab === "rules" && root.selectingRules && !root.tracingUrl
             spacing: Style.spacing.sm
 
             Text {
@@ -1235,7 +1273,7 @@ Item {
                     id: searchField
 
                     anchors.fill: parent
-                    placeholderText: "Search rules…"
+                    placeholderText: "Search or paste a URL…"
                     foreground: root.foreground
                     accent: root.accent
                     font.family: root.fontFamily
@@ -1279,6 +1317,7 @@ Item {
 
             Item {
                 id: groupControl
+                visible: !root.tracingUrl
                 implicitWidth: groupContents.implicitWidth + Style.space(8)
                 implicitHeight: searchField.implicitHeight
                 activeFocusOnTab: true
@@ -1338,6 +1377,7 @@ Item {
 
             Dropdown {
                 id: sortDropdown
+                visible: !root.tracingUrl
 
                 showLabel: false
                 Layout.preferredWidth: Style.space(104)
@@ -1368,6 +1408,7 @@ Item {
 
             Dropdown {
                 id: filterDropdown
+                visible: !root.tracingUrl
 
                 showLabel: false
                 Layout.preferredWidth: Style.space(104)
@@ -1398,7 +1439,7 @@ Item {
             }
 
             Item {
-                visible: root.searchQuery.trim() !== "" || root.filterMode !== "all"
+                visible: !root.tracingUrl && (root.searchQuery.trim() !== "" || root.filterMode !== "all")
                 implicitWidth: countLabel.implicitWidth + Style.spacing.xs * 2
                 implicitHeight: searchField.implicitHeight
 
@@ -1434,7 +1475,7 @@ Item {
         // Reorder hint banner when in Priority view with active filters
         RowLayout {
             Layout.fillWidth: true
-            visible: root.activeTab === "rules" && !root.groupBySite && root.sortMode === "priority" && !root.canReorder
+            visible: root.activeTab === "rules" && !root.tracingUrl && !root.groupBySite && root.sortMode === "priority" && !root.canReorder
             spacing: Style.spacing.md
 
             Text {
@@ -1505,12 +1546,70 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
+            ColumnLayout {
+                anchors.fill: parent
+                visible: root.activeTab === "rules" && root.tracingUrl
+                spacing: Style.spacing.sm
+
+                Text {
+                    Layout.fillWidth: true
+                    textFormat: Text.PlainText
+                    text: root.traceError || (!root.traceResult ? "Checking URL…"
+                        : root.traceResult.outcome === "rule" ? "Matching rules · first usable match opens"
+                        : root.traceResult.matches.length ? "The chooser opens · matching rules shown below"
+                        : "No rules match. The chooser opens.")
+                    color: root.traceError ? root.urgent : root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    wrapMode: Text.Wrap
+                }
+
+                ListView {
+                    id: traceList
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    model: root.traceResult ? root.traceResult.matches : []
+                    Controls.ScrollBar.vertical: Controls.ScrollBar {
+                        policy: traceList.contentHeight > traceList.height ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
+                    }
+                    delegate: Column {
+                        required property var modelData
+                        width: traceList.width - Style.spacing.md
+                        spacing: Style.spacing.xxs
+                        Text {
+                            width: parent.width
+                            textFormat: Text.PlainText
+                            text: (modelData.fallback ? "Fallback" : "#" + modelData.priority)
+                                + "  " + modelData.pattern
+                            color: modelData.status === "winner" ? root.accent : root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.bodySmall
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            width: parent.width
+                            textFormat: Text.PlainText
+                            text: modelData.label + (modelData["private"] ? " · Private" : "")
+                                + " · " + root.traceStatus(modelData.status)
+                            color: Util.alpha(root.foreground, 0.75)
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            elide: Text.ElideRight
+                        }
+                        Item { width: 1; height: Style.spacing.xs }
+                        PanelSeparator { width: parent.width; foreground: root.foreground }
+                        Item { width: 1; height: Style.spacing.xs }
+                    }
+                }
+            }
+
             // ---- Rules list view ----
             ListView {
                 id: rulesList
 
                 anchors.fill: parent
-                visible: root.activeTab === "rules"
+                visible: root.activeTab === "rules" && !root.tracingUrl
                 clip: true
                 spacing: 0
                 boundsBehavior: Flickable.StopAtBounds
@@ -1848,7 +1947,7 @@ Item {
             ColumnLayout {
                 anchors.centerIn: parent
                 width: Math.min(parent.width - Style.spacing.huge * 2, Style.space(380))
-                visible: root.activeTab === "rules" && visibleRulesModel.count === 0
+                visible: root.activeTab === "rules" && !root.tracingUrl && visibleRulesModel.count === 0
                 spacing: Style.spacing.lg
 
                 Text {
