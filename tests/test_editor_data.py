@@ -125,10 +125,11 @@ class EditorDataTest(unittest.TestCase):
         )
         self.assertEqual(
             set(data.keys()),
-            {"rules", "fallback", "browsers", "apps", "suggestions", "revision", "sort"},
+            {"rules", "fallback", "browsers", "apps", "suggestions", "revision", "sort", "autosave"},
         )
         self.assertEqual(data["rules"], [])
         self.assertEqual(data["sort"], "priority")
+        self.assertIs(data["autosave"], True)
         self.assertIsNone(data["fallback"])
         self.assertEqual(data["browsers"], [])
         self.assertEqual(data["apps"], [])
@@ -141,6 +142,14 @@ class EditorDataTest(unittest.TestCase):
         self.assertEqual(json.loads(self._run("load").stdout)["sort"], "target")
         self.assertNotEqual(self._run("sort", "invalid").returncode, 0)
         self.assertEqual(json.loads(self._run("load").stdout)["sort"], "target")
+        self.assertFalse(os.path.exists(os.path.join(self.conf_dir, "rules.conf")))
+
+    def test_autosave_preference_defaults_on_and_survives_reload(self):
+        self.assertIs(json.loads(self._run("load").stdout)["autosave"], True)
+        self.assertEqual(self._run("autosave", "off").returncode, 0)
+        self.assertIs(json.loads(self._run("load").stdout)["autosave"], False)
+        self.assertEqual(self._run("autosave", "on").returncode, 0)
+        self.assertIs(json.loads(self._run("load").stdout)["autosave"], True)
         self.assertFalse(os.path.exists(os.path.join(self.conf_dir, "rules.conf")))
 
     def test_url_trace_uses_draft_priority_and_never_writes_rules(self):

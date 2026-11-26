@@ -50,7 +50,9 @@ and remembers the decisions you want to make permanent.
   picks, then edit and save the rules you want. For example, a detected Zoom client can
   handle meeting links across regional Zoom hosts. Edit, enable, or reorder rules,
   choose a fallback for unmatched links, and find rules that reference missing profiles.
-  New browser profiles are auto-added when the picker opens or when you click **Rescan profiles**.
+  Completed rule edits autosave by default. Turn **Autosave** off in **Settings**
+  to save changes manually. New browser profiles are auto-added when the picker
+  opens or when you rescan targets.
 - **Routes** `http`, `https`, and `mailto`.
 
 ## Install

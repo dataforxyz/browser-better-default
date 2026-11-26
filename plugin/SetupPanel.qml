@@ -12,6 +12,7 @@ Item {
   property string statusKey: ""
   property string errorText: ""
   property string pendingSort: ""
+  property string pendingAutosave: ""
   property string pendingTrace: ""
   property string activeTrace: ""
   property var document: null
@@ -64,8 +65,8 @@ Item {
   function applyPendingRule() {
     if (!pendingRule)
       return
-    editor.beginRule(pendingRule.pattern, pendingRule.label || "")
     pendingUrl = pendingRule.url
+    editor.beginRule(pendingRule.pattern, pendingRule.label || "")
     pendingRule = null
   }
 
@@ -91,10 +92,15 @@ Item {
   }
 
   function writeSort() {
-    if (sortWorker.running || pendingSort === "")
+    if (sortWorker.running || (pendingSort === "" && pendingAutosave === ""))
       return
-    sortWorker.command = [backend, "sort", pendingSort]
-    pendingSort = ""
+    if (pendingAutosave !== "") {
+      sortWorker.command = [backend, "autosave", pendingAutosave]
+      pendingAutosave = ""
+    } else {
+      sortWorker.command = [backend, "sort", pendingSort]
+      pendingSort = ""
+    }
     sortWorker.running = true
   }
 
@@ -102,7 +108,7 @@ Item {
     id: sortWorker
     onExited: function(code, status) {
       if (code !== 0 || status !== 0)
-        root.statusKey = "sortSaveFailed"
+        root.statusKey = "preferenceSaveFailed"
       Qt.callLater(root.writeSort)
     }
   }
@@ -192,7 +198,13 @@ Item {
         Layout.fillWidth: true
         Layout.fillHeight: true
         document: root.document
+        allowAutosave: root.pendingUrl === "" && !root.pendingRule
         busy: dataWorker.running || setup.running
+        onAutosaveChosen: enabled => {
+          root.pendingAutosave = enabled ? "on" : "off"
+          root.writeSort()
+        }
+        onDraftDiscarded: root.pendingUrl = ""
         onSetupRequested: refreshOnly => root.install(refreshOnly)
         onSortChosen: order => {
           root.pendingSort = order

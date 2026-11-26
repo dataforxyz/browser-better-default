@@ -5,7 +5,7 @@
   "refresh": "Refresh launchers",
   "rules": "Link rules",
   "setup": "Settings",
-  "sortSaveFailed": "Could not remember the sort order.",
+  "preferenceSaveFailed": "Could not save the editor preference.",
   "saved": "Rules saved.",
   "invalidData": "Could not read Browser Picker rules.",
   "pendingLink": "Finish the current link rule before adding another from the picker.",

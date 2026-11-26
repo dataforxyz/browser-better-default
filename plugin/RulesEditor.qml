@@ -12,6 +12,9 @@ Item {
     property var document: null
     property bool busy: false
     property bool dirty: false
+    property bool autosave: true
+    property bool allowAutosave: true
+    property int editingPatternUid: -1
     // Scoped Omarchy theme surface — defaults track qs.Commons live and can be
     // overridden per-instance by a host window.
     property color foreground: Commons.Color.foreground
@@ -59,6 +62,7 @@ Item {
     property var _baselineRules: []
     property string _baselineFallback: ""
     property bool _awaitingSave: false
+    property bool _automaticSave: false
     property bool _rescanInFlight: false
     property var _queuedBeginRule: null
     property var _suggestionEdits: ({
@@ -97,8 +101,35 @@ Item {
     signal focusSyncRequested()
     signal draftSynced()
     signal sortChosen(string order)
+    signal autosaveChosen(bool enabled)
+    signal draftDiscarded()
     signal setupRequested(bool refreshOnly)
     signal traceRequested(string request)
+
+    onAllowAutosaveChanged: scheduleAutosave()
+
+    Timer {
+        id: autosaveDelay
+        interval: 650
+        onTriggered: {
+            if (root.canAutosave())
+                root.requestSave(true);
+        }
+    }
+
+    function canAutosave() {
+        return autosave && allowAutosave && dirty && !busy && _hasLoadedDocument
+            && editingPatternUid < 0 && pendingRemoval.length === 0
+            && draftRules.every(rule => rule.pattern.trim() && rule.label.trim()
+                && rule.label !== noneFoundLabel && !invalidPatternReason(rule.pattern)
+                && (!rule.isPrivate || !isAppTarget(rule.label)));
+    }
+
+    function scheduleAutosave() {
+        autosaveDelay.stop();
+        if (canAutosave())
+            autosaveDelay.start();
+    }
 
     onTraceRequestChanged: {
         traceResult = null;
@@ -403,6 +434,7 @@ Item {
 
     function recomputeDirty() {
         dirty = payloadSignature(draftRules, draftFallback) !== _baselineSignature;
+        scheduleAutosave();
     }
 
     function applyDocument(doc) {
@@ -427,26 +459,32 @@ Item {
         var incomingFallback = safeDoc.fallback !== undefined && safeDoc.fallback !== null ? String(safeDoc.fallback).trim() : "";
         var incomingSig = payloadSignature(incomingRules, incomingFallback);
         var wasFirstLoad = !_hasLoadedDocument;
+        var keepSavedDraft = _awaitingSave && _automaticSave
+            && payloadSignature(draftRules, draftFallback) === incomingSig;
         var shouldReplaceDraft = wasFirstLoad || _awaitingSave || !dirty || (incomingRevision !== _lastRevision && payloadSignature(draftRules, draftFallback) === incomingSig);
         if (wasFirstLoad && ["priority", "site", "pattern", "target"].includes(doc.sort))
             sortMode = doc.sort;
+        if (wasFirstLoad)
+            autosave = safeDoc.autosave !== false;
         _hasLoadedDocument = true;
         _lastRevision = incomingRevision;
         _baselineRules = cloneRuleList(incomingRules);
         _baselineFallback = incomingFallback;
         _baselineSignature = incomingSig;
         if (shouldReplaceDraft) {
-            selectedRules = {};
-            selectingRules = false;
             var savedSuccess = _awaitingSave;
             _awaitingSave = false;
+            _automaticSave = false;
             _rescanInFlight = false;
-            _stagedSuggestionKeys = ({
-            });
-            _suggestionEdits = ({
-            });
-            draftRules = cloneRuleList(incomingRules);
-            draftFallback = incomingFallback;
+            if (!keepSavedDraft) {
+                selectedRules = {};
+                selectingRules = false;
+                editingPatternUid = -1;
+                _stagedSuggestionKeys = ({});
+                _suggestionEdits = ({});
+                draftRules = cloneRuleList(incomingRules);
+                draftFallback = incomingFallback;
+            }
             if (wasFirstLoad && _queuedBeginRule) {
                 var queued = _queuedBeginRule;
                 _queuedBeginRule = null;
@@ -789,8 +827,11 @@ Item {
     }
 
     function commitRulePatternEdit(uid) {
+        if (editingPatternUid === uid)
+            editingPatternUid = -1;
         rebuildVisibleRules();
         rebuildSuggestions();
+        scheduleAutosave();
     }
 
     function setRuleLabel(uid, label) {
@@ -869,6 +910,8 @@ Item {
         pendingRemoval = [];
         if (confirmed)
             removeRules(uids);
+        else
+            scheduleAutosave();
         focusEditor();
     }
 
@@ -876,6 +919,8 @@ Item {
         if (busy)
             return;
         draftRules = draftRules.filter(rule => !uids.includes(rule.uid));
+        if (uids.includes(editingPatternUid))
+            editingPatternUid = -1;
         selectedRules = {};
         selectingRules = false;
         recomputeDirty();
@@ -900,6 +945,7 @@ Item {
             return ;
 
         draftRules = cloneRuleList(_baselineRules);
+        editingPatternUid = -1;
         selectedRules = {};
         selectingRules = false;
         draftFallback = _baselineFallback;
@@ -912,15 +958,18 @@ Item {
         rebuildVisibleRules();
         rebuildSuggestions();
         statusMessage = "Reverted unsaved changes.";
+        draftDiscarded();
         statusIsWarning = false;
         statusShowRulesLink = false;
     }
 
-    function requestSave() {
+    function requestSave(automatic) {
         if (busy || !dirty)
             return ;
 
+        autosaveDelay.stop();
         var payload = buildSavePayload(draftRules, draftFallback);
+        _automaticSave = !!automatic;
         _awaitingSave = true;
         statusMessage = "";
         statusIsWarning = false;
@@ -1080,6 +1129,7 @@ Item {
                 if (!root.busy) {
                     root._rescanInFlight = false;
                     root._awaitingSave = false;
+                    root._automaticSave = false;
                 }
             });
         }
@@ -1565,6 +1615,7 @@ Item {
         // 3. Main scrollable list (Rules OR Suggestions)
         Item {
             visible: root.activeTab !== "settings"
+            enabled: !root._awaitingSave
             Layout.fillWidth: true
             Layout.fillHeight: true
 
@@ -1864,7 +1915,10 @@ Item {
 
                                 }
                                 Component.onCompleted: text = rowDelegate.pattern
-                                onTextEdited: root.setRulePattern(rowDelegate.uid, text)
+                                onTextEdited: {
+                                    root.editingPatternUid = rowDelegate.uid;
+                                    root.setRulePattern(rowDelegate.uid, text);
+                                }
                                 onEditingFinished: root.commitRulePatternEdit(rowDelegate.uid)
 
                                 background: BorderSurface {
@@ -2196,8 +2250,23 @@ Item {
         }
 
         // Settings
+        Toggle {
+            visible: root.activeTab === "settings"
+            Layout.fillWidth: true
+            enabled: root._hasLoadedDocument
+            label: "Autosave"
+            description: "Save completed rule edits automatically."
+            checked: root.autosave
+            onClicked: {
+                root.autosave = !root.autosave;
+                root.autosaveChosen(root.autosave);
+                root.scheduleAutosave();
+            }
+        }
+
         RowLayout {
             visible: root.activeTab === "settings"
+            enabled: !root._awaitingSave
             Layout.fillWidth: true
             spacing: Style.spacing.md
 
@@ -2323,7 +2392,7 @@ Item {
                         return "⚠ " + root.missingRuleCount + " rule(s) reference a missing target.";
 
                     if (root.dirty)
-                        return "Unsaved changes — press Ctrl+S or click Save.";
+                        return autosaveDelay.running ? "Autosaving…" : "Unsaved changes — press Ctrl+S or click Save.";
 
                     return "";
                 }
