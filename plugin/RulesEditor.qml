@@ -21,6 +21,7 @@ Item {
     property color background: Commons.Color.background
     property color accent: Commons.Color.accent
     property color urgent: Commons.Color.urgent
+    readonly property color disabledTint: urgent.r > urgent.g && urgent.r > urgent.b ? urgent : "#df7777"
     property color muted: Commons.Color.muted
     property color popupBackground: Commons.Color.popups.background
     property color popupBorder: Commons.Color.popups.border
@@ -1913,7 +1914,10 @@ Item {
                         width: parent.width
                         visible: rowDelegate.groupOpen
                         height: visible ? Style.space(34) : 0
-                        color: root.selectingRules && root.selectedRules[rowDelegate.uid]
+                        color: !rowDelegate.enabled
+                            ? Util.alpha(root.disabledTint, root.selectingRules && root.selectedRules[rowDelegate.uid]
+                                ? 0.24 : rowHover.hovered ? 0.19 : 0.12)
+                            : root.selectingRules && root.selectedRules[rowDelegate.uid]
                             ? Util.alpha(root.accent, 0.13)
                             : Util.alpha(root.foreground, rowHover.hovered ? 0.07 : (rowDelegate.groupCount > 1 ? 0.035 : 0))
 
@@ -2087,7 +2091,7 @@ Item {
                                     trackHeight: Style.space(14)
                                     trackWidth: Style.space(26)
                                     knobSize: Style.space(8)
-                                    foreground: root.foreground
+                                    foreground: rowDelegate.enabled ? root.foreground : root.disabledTint
                                     accent: root.accent
                                     onToggled: root.setRuleEnabled(rowDelegate.uid, !rowDelegate.enabled)
                                 }
