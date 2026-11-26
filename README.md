@@ -61,7 +61,7 @@ and remembers the decisions you want to make permanent.
 omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable
 ```
 
-Open **Browser Better Default** from the bar's tray, choose **Setup**, and click **Set as default
+Open **Browser Better Default** from the bar's tray, choose **Settings**, and click **Set as default
 link handler**. This registers Browser Picker for web and email links. If the
 tray is hidden, open the setup window from a terminal:
 
@@ -70,7 +70,7 @@ omarchy-shell shell summon browser-better-default '{}'
 ```
 
 To move an existing install into the plugin checkout, use **Refresh launchers**
-under **Setup**. It repoints the commands to the plugin checkout, preserving
+under **Settings**. It repoints the commands to the plugin checkout, preserving
 your rules, profiles, and current link defaults.
 
 ### Update on Omarchy
@@ -81,7 +81,7 @@ omarchy plugin update browser-better-default
 
 The installed commands follow the plugin checkout, so picker code updates apply
 right away. If a release changes desktop entries or adds a command, open the
-editor, choose **Setup**, and click **Refresh launchers** to apply those changes.
+editor, choose **Settings**, and click **Refresh launchers** to apply those changes.
 
 If you use the optional [Chromium web-app bridge](docs/BRIDGE.md), set it up from
 `~/.config/omarchy/plugins/browser-better-default` so it follows that checkout

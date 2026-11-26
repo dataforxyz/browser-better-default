@@ -29,7 +29,7 @@ Item {
     property string activeTab: "rules"
     // "rules" | "suggestions"
     property string searchQuery: ""
-    property string sortMode: "site" // "site" | "priority" | "pattern" | "target"
+    property string sortMode: "priority" // "site" | "priority" | "pattern" | "target"
     property bool groupBySite: true
     property string filterMode: "all" // "all" | "enabled" | "disabled" | "private"
     property var expandedSites: ({})
@@ -89,6 +89,16 @@ Item {
     signal rescanRequested()
     signal focusSyncRequested()
     signal draftSynced()
+    signal sortChosen(string order)
+    signal setupRequested(bool refreshOnly)
+
+    function chooseSort(order) {
+        if (sortMode === order)
+            return;
+        sortMode = order;
+        sortChosen(order);
+        rebuildVisibleRules();
+    }
 
     function toggleSite(site) {
         const next = Object.assign({}, expandedSites);
@@ -381,6 +391,8 @@ Item {
         var incomingSig = payloadSignature(incomingRules, incomingFallback);
         var wasFirstLoad = !_hasLoadedDocument;
         var shouldReplaceDraft = wasFirstLoad || _awaitingSave || !dirty || (incomingRevision !== _lastRevision && payloadSignature(draftRules, draftFallback) === incomingSig);
+        if (wasFirstLoad && ["priority", "site", "pattern", "target"].includes(doc.sort))
+            sortMode = doc.sort;
         _hasLoadedDocument = true;
         _lastRevision = incomingRevision;
         _baselineRules = cloneRuleList(incomingRules);
@@ -813,14 +825,7 @@ Item {
     }
 
     function jumpToPriorityOrder(uid) {
-        sortMode = "priority";
-        groupBySite = false;
-        filterMode = "all";
-        searchQuery = "";
-        if (searchField && searchField.text !== "")
-            searchField.text = "";
-
-        rebuildVisibleRules();
+        chooseSort("priority");
         Qt.callLater(function() {
             scrollToRuleUid(uid);
         });
@@ -1310,8 +1315,7 @@ Item {
                     "label": "Target"
                 }]
                 onChanged: function(val) {
-                    root.sortMode = val;
-                    root.rebuildVisibleRules();
+                    root.chooseSort(val);
                 }
             }
 
@@ -1449,6 +1453,7 @@ Item {
 
         // 3. Main scrollable list (Rules OR Suggestions)
         Item {
+            visible: root.activeTab !== "settings"
             Layout.fillWidth: true
             Layout.fillHeight: true
 
@@ -2015,8 +2020,9 @@ Item {
             foreground: root.foreground
         }
 
-        // 4. Footer: Unmatched links fallback + compact dirty/status bar
+        // Settings
         RowLayout {
+            visible: root.activeTab === "settings"
             Layout.fillWidth: true
             spacing: Style.spacing.md
 
@@ -2056,6 +2062,28 @@ Item {
                 tooltipText: "Browser profile '" + root.draftFallback + "' not found — pick another or Rescan."
             }
 
+        }
+
+        RowLayout {
+            visible: root.activeTab === "settings"
+            Layout.fillWidth: true
+            Button {
+                text: "Set as default link handler"
+                focusable: true
+                enabled: !root.busy
+                onClicked: root.setupRequested(false)
+            }
+            Button {
+                text: "Refresh launchers"
+                focusable: true
+                enabled: !root.busy
+                onClicked: root.setupRequested(true)
+            }
+        }
+
+        Item {
+            visible: root.activeTab === "settings"
+            Layout.fillHeight: true
         }
 
         // Status / dirty / warning strip

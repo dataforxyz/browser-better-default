@@ -124,15 +124,23 @@ class EditorDataTest(unittest.TestCase):
         )
         self.assertEqual(
             set(data.keys()),
-            {"rules", "fallback", "browsers", "apps", "suggestions", "revision"},
+            {"rules", "fallback", "browsers", "apps", "suggestions", "revision", "sort"},
         )
         self.assertEqual(data["rules"], [])
+        self.assertEqual(data["sort"], "priority")
         self.assertIsNone(data["fallback"])
         self.assertEqual(data["browsers"], [])
         self.assertEqual(data["apps"], [])
         self.assertEqual(data["suggestions"], [])
         self.assertEqual(data["revision"], "missing")
         self.assertFalse(os.path.exists(self.conf_dir))
+
+    def test_sort_preference_survives_reload_without_writing_rules(self):
+        self.assertEqual(self._run("sort", "target").returncode, 0)
+        self.assertEqual(json.loads(self._run("load").stdout)["sort"], "target")
+        self.assertNotEqual(self._run("sort", "invalid").returncode, 0)
+        self.assertEqual(json.loads(self._run("load").stdout)["sort"], "target")
+        self.assertFalse(os.path.exists(os.path.join(self.conf_dir, "rules.conf")))
 
     def test_load_preserves_priority_private_catchall_and_stale_labels(self):
         self._write_conf(

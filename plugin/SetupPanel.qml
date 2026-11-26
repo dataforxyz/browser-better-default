@@ -12,7 +12,8 @@ Item {
   property bool opened: false
   property string statusKey: ""
   property string errorText: ""
-  property bool setupVisible: false
+  readonly property bool setupVisible: editor.activeTab === "settings"
+  property string pendingSort: ""
   property var document: null
   property var pendingRule: null
   property string pendingUrl: ""
@@ -34,7 +35,7 @@ Item {
       }
     } catch (_) {}
     opened = true
-    setupVisible = false
+    editor.activeTab = "rules"
     if (!editor.dirty && !dataWorker.running)
       readOrSave("load")
     else if (document && !dataWorker.running)
@@ -86,6 +87,23 @@ Item {
     onExited: function(exitCode, exitStatus) {
       root.statusKey = exitCode === 0 && exitStatus === 0 ? "success" : "failure"
       root.errorText = errors.text.trim()
+    }
+  }
+
+  function writeSort() {
+    if (sortWorker.running || pendingSort === "")
+      return
+    sortWorker.command = [backend, "sort", pendingSort]
+    pendingSort = ""
+    sortWorker.running = true
+  }
+
+  Process {
+    id: sortWorker
+    onExited: function(code, status) {
+      if (code !== 0 || status !== 0)
+        root.statusKey = "sortSaveFailed"
+      Qt.callLater(root.writeSort)
     }
   }
 
@@ -156,7 +174,7 @@ Item {
           focusable: true
           onClicked: {
             root.statusKey = ""
-            root.setupVisible = !root.setupVisible
+            editor.activeTab = root.setupVisible ? "rules" : "settings"
           }
         }
       }
@@ -165,9 +183,13 @@ Item {
         id: editor
         Layout.fillWidth: true
         Layout.fillHeight: true
-        visible: !root.setupVisible
         document: root.document
-        busy: dataWorker.running
+        busy: dataWorker.running || setup.running
+        onSetupRequested: refreshOnly => root.install(refreshOnly)
+        onSortChosen: order => {
+          root.pendingSort = order
+          root.writeSort()
+        }
         onRescanRequested: {
           if (editor.dirty) {
             root.statusKey = "saveFirst"
@@ -181,33 +203,6 @@ Item {
             root.readOrSave("save", {rules, fallback: fallback || null, revision: root.document.revision})
         }
       }
-
-      Text {
-        Layout.fillWidth: true
-        visible: root.setupVisible
-        color: Commons.Color.foreground
-        text: strings.t("description")
-        textFormat: Text.PlainText
-        wrapMode: Text.WordWrap
-      }
-
-      RowLayout {
-        visible: root.setupVisible
-        Ui.Button {
-          text: strings.t("setDefault")
-          focusable: true
-          enabled: !setup.running
-          onClicked: root.install(false)
-        }
-        Ui.Button {
-          text: strings.t("refresh")
-          focusable: true
-          enabled: !setup.running
-          onClicked: root.install(true)
-        }
-      }
-
-      Item { Layout.fillHeight: true; visible: root.setupVisible }
 
       Text {
         Layout.fillWidth: true

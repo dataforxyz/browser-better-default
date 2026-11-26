@@ -332,7 +332,21 @@ def _compose_state(raw_rules, revision, browsers, apps, apps_mod, registry):
         "apps": apps,
         "suggestions": suggestions,
         "revision": revision,
+        "sort": load_sort(),
     }
+
+
+SORT_ORDERS = ("priority", "site", "pattern", "target")
+
+
+def load_sort():
+    path = os.path.join(config_dir(), "editor-sort")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = handle.read(32).strip()
+    except OSError:
+        return "priority"
+    return value if value in SORT_ORDERS else "priority"
 
 
 def build_state():
@@ -592,9 +606,14 @@ def main(argv):
             if len(argv) != 2:
                 raise ValidationError("Usage: browser-picker-editor-data save <json>")
             result = cmd_save(argv[1])
+        elif cmd == "sort":
+            if len(argv) != 2 or argv[1] not in SORT_ORDERS:
+                raise ValidationError("Invalid editor sort order.")
+            atomic_write_text(os.path.join(config_dir(), "editor-sort"), argv[1] + "\n")
+            result = {"sort": argv[1]}
         else:
             raise ValidationError(
-                f"Unknown command '{cmd}'. Expected: load, rescan, or save."
+                f"Unknown command '{cmd}'. Expected: load, rescan, save, or sort."
             )
     except ValidationError as exc:
         sys.stderr.write(f"{exc}\n")
