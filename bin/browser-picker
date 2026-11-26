@@ -186,7 +186,7 @@ main() {
 
   if [ "${#ENTRIES[@]}" -eq 0 ] && [ "${#APP_LABELS[@]}" -eq 0 ]; then
     notify "No browsers configured — opening setup."
-    setsid -f browser-picker-rules >/dev/null 2>&1
+    setsid -f "$(helper_bin browser-picker-rules)" >/dev/null 2>&1
     return 0
   fi
   if [ -z "${BROWSER_PICKER_MENU:-}" ] && ! command -v omarchy-launch-walker >/dev/null 2>&1 && ! command -v walker >/dev/null 2>&1 && ! command -v omarchy-menu-select >/dev/null 2>&1; then
@@ -256,11 +256,11 @@ main() {
 
   case "$choice" in
     "$EDIT_LABEL")
-      setsid -f browser-picker-rules >/dev/null 2>&1
+      setsid -f "$(helper_bin browser-picker-rules)" >/dev/null 2>&1
       return 0 ;;
     "$REMEMBER_LABEL")
       # Open the rules editor pre-filled with this URL; it opens the link after Save.
-      setsid -f browser-picker-rules "$url" >/dev/null 2>&1
+      setsid -f "$(helper_bin browser-picker-rules)" "$url" >/dev/null 2>&1
       return 0 ;;
   esac
 

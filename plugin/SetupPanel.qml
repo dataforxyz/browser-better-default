@@ -1,9 +1,9 @@
 import QtQuick
-import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
-import qs.Commons
+import qs.Commons as Commons
+import qs.Ui as Ui
 
 Item {
   id: root
@@ -12,10 +12,35 @@ Item {
   property bool opened: false
   property string statusKey: ""
   property string errorText: ""
+  property bool setupVisible: false
+  property var document: null
+  property var pendingRule: null
+  property string pendingUrl: ""
+  property string operation: ""
   readonly property string installer: decodeURIComponent(String(Qt.resolvedUrl("../install.sh")).replace(/^file:\/\//, ""))
+  readonly property string backend: decodeURIComponent(String(Qt.resolvedUrl("../bin/browser-picker-editor-data")).replace(/^file:\/\//, ""))
+  readonly property string picker: decodeURIComponent(String(Qt.resolvedUrl("../bin/browser-picker")).replace(/^file:\/\//, ""))
 
-  function open() {
+  function open(payloadJson) {
+    let duplicateRequest = false
+    try {
+      const request = JSON.parse(payloadJson || "{}")
+      if (request && typeof request.pattern === "string" && typeof request.url === "string"
+          && /^(https?:\/\/|mailto:)/.test(request.url)) {
+        if (pendingRule || pendingUrl)
+          duplicateRequest = true
+        else
+          pendingRule = request
+      }
+    } catch (_) {}
     opened = true
+    setupVisible = false
+    if (!editor.dirty && !dataWorker.running)
+      readOrSave("load")
+    else if (document && !dataWorker.running)
+      applyPendingRule()
+    if (duplicateRequest)
+      statusKey = "pendingLink"
     Qt.callLater(syncWindowVisibility)
   }
 
@@ -35,7 +60,25 @@ Item {
     setup.running = true
   }
 
-  Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
+  function applyPendingRule() {
+    if (!pendingRule)
+      return
+    editor.beginRule(pendingRule.pattern, pendingRule.label || "")
+    pendingUrl = pendingRule.url
+    pendingRule = null
+  }
+
+  function readOrSave(action, payload) {
+    if (dataWorker.running)
+      return
+    operation = action
+    statusKey = "working"
+    errorText = ""
+    dataWorker.command = payload ? [backend, action, JSON.stringify(payload)] : [backend, action]
+    dataWorker.running = true
+  }
+
+  Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
 
   Process {
     id: setup
@@ -46,13 +89,41 @@ Item {
     }
   }
 
+  Process {
+    id: dataWorker
+    stdout: StdioCollector { id: dataOutput }
+    stderr: StdioCollector { id: dataErrors }
+    onExited: function(code, status) {
+      if (code !== 0 || status !== 0) {
+        root.statusKey = "failure"
+        root.errorText = dataErrors.text.trim()
+        return
+      }
+      try {
+        root.document = JSON.parse(dataOutput.text)
+      } catch (_) {
+        root.statusKey = "invalidData"
+        return
+      }
+      root.statusKey = root.operation === "save" ? "saved" : ""
+      if (root.operation === "save" && root.pendingUrl) {
+        const url = root.pendingUrl
+        root.pendingUrl = ""
+        Quickshell.execDetached([root.picker, url])
+        if (root.shell) root.shell.hide("browser-better-default")
+        else root.close()
+      }
+      root.applyPendingRule()
+    }
+  }
+
   FloatingWindow {
     id: window
     title: strings.t("title")
     visible: false
-    implicitWidth: 480
-    implicitHeight: content.implicitHeight + 48
-    color: Color.background
+    implicitWidth: 720
+    implicitHeight: 560
+    color: Commons.Color.background
     onVisibleChanged: {
       if (!visible && root.opened) {
         if (root.shell) root.shell.hide("browser-better-default")
@@ -65,34 +136,83 @@ Item {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.top: parent.top
-      anchors.margins: 24
-      spacing: 12
+      anchors.bottom: parent.bottom
+      anchors.margins: Commons.Style.space(14)
+      spacing: Commons.Style.space(8)
+
+      RowLayout {
+        Layout.fillWidth: true
+        Text {
+          Layout.fillWidth: true
+          text: strings.t(root.setupVisible ? "setup" : "rules")
+          textFormat: Text.PlainText
+          font.family: Commons.Style.font.family
+          font.pixelSize: Commons.Style.font.body + 3
+          font.bold: true
+          color: Commons.Color.foreground
+        }
+        Ui.Button {
+          text: strings.t(root.setupVisible ? "rules" : "setup")
+          focusable: true
+          onClicked: {
+            root.statusKey = ""
+            root.setupVisible = !root.setupVisible
+          }
+        }
+      }
+
+      RulesEditor {
+        id: editor
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        visible: !root.setupVisible
+        document: root.document
+        busy: dataWorker.running
+        onRescanRequested: {
+          if (editor.dirty) {
+            root.statusKey = "saveFirst"
+            root.errorText = ""
+          } else {
+            root.readOrSave("rescan")
+          }
+        }
+        onSaveRequested: function(rules, fallback) {
+          if (root.document)
+            root.readOrSave("save", {rules, fallback: fallback || null, revision: root.document.revision})
+        }
+      }
 
       Text {
         Layout.fillWidth: true
-        color: Color.foreground
+        visible: root.setupVisible
+        color: Commons.Color.foreground
         text: strings.t("description")
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
       }
 
       RowLayout {
-        Controls.Button {
+        visible: root.setupVisible
+        Ui.Button {
           text: strings.t("setDefault")
+          focusable: true
           enabled: !setup.running
           onClicked: root.install(false)
         }
-        Controls.Button {
+        Ui.Button {
           text: strings.t("refresh")
+          focusable: true
           enabled: !setup.running
           onClicked: root.install(true)
         }
       }
 
+      Item { Layout.fillHeight: true; visible: root.setupVisible }
+
       Text {
         Layout.fillWidth: true
         visible: root.statusKey !== ""
-        color: Color.foreground
+        color: Commons.Color.foreground
         text: root.statusKey ? strings.t(root.statusKey) : ""
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
@@ -101,10 +221,12 @@ Item {
       Text {
         Layout.fillWidth: true
         visible: root.statusKey === "failure" && root.errorText !== ""
-        color: Color.foreground
+        color: Commons.Color.foreground
         text: root.errorText
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
+        maximumLineCount: 3
+        elide: Text.ElideRight
       }
     }
   }

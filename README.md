@@ -37,7 +37,7 @@ and remembers the decisions you want to make permanent.
   directly, no menu. Plain text matches on **path/host boundaries** (covers a URL *and its
   child paths*, but `…/repo` won't match `…/repo-staging`); `*`/`?` = glob; `regex:` prefix
   = full regex. First match wins.
-- **In-flow rule creation** — pick *📌 Always open this site in…* from the menu and a GTK
+- **In-flow rule creation** — pick *📌 Always open this site in…* from the menu and the Omarchy
   editor opens **pre-filled** from the current URL; trim the scope, pick a profile, Save.
 - **Learns your habits** — repeat a profile for a site and the picker grows explicit
   `⭐ scope → profile` shortcuts at the top (see below). Fully **local & offline**.
@@ -46,7 +46,7 @@ and remembers the decisions you want to make permanent.
   (`--incognito` / `--private-window` chosen per browser family).
 - **Default for unmatched links** — optionally route everything that matches no rule to a
   chosen profile (a catch-all), instead of always showing the menu.
-- **GTK rules editor** — review **Recommended defaults** from detected apps and repeated
+- **Omarchy rules editor** — review suggestions from detected apps and repeated
   picks, then edit and save the rules you want. For example, a detected Zoom client can
   handle meeting links across regional Zoom hosts. Edit, enable, or reorder rules,
   choose a fallback for unmatched links, and find rules that reference missing profiles.
@@ -61,7 +61,7 @@ and remembers the decisions you want to make permanent.
 omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable
 ```
 
-Open **Browser Better Default** from the bar's tray and click **Set as default
+Open **Browser Better Default** from the bar's tray, choose **Setup**, and click **Set as default
 link handler**. This registers Browser Picker for web and email links. If the
 tray is hidden, open the setup window from a terminal:
 
@@ -70,7 +70,7 @@ omarchy-shell shell summon browser-better-default '{}'
 ```
 
 To move an existing install into the plugin checkout, use **Refresh launchers**
-in the setup window. It repoints the commands to the plugin checkout, preserving
+under **Setup**. It repoints the commands to the plugin checkout, preserving
 your rules, profiles, and current link defaults.
 
 ### Update on Omarchy
@@ -81,7 +81,7 @@ omarchy plugin update browser-better-default
 
 The installed commands follow the plugin checkout, so picker code updates apply
 right away. If a release changes desktop entries or adds a command, open the
-setup window and click **Refresh launchers** to apply those changes.
+editor, choose **Setup**, and click **Refresh launchers** to apply those changes.
 
 If you use the optional [Chromium web-app bridge](docs/BRIDGE.md), set it up from
 `~/.config/omarchy/plugins/browser-better-default` so it follows that checkout
@@ -91,7 +91,8 @@ browser flags (or in the unpacked extension settings) with the plugin checkout's
 
 ### Manual install
 
-Use this method on other Linux desktops, or to run from your own checkout:
+To develop from your own checkout, you can install the link handler manually.
+The rules editor opens through the enabled Omarchy plugin.
 
 ```sh
 git clone https://github.com/dataforxyz/browser-better-default
@@ -140,7 +141,7 @@ set `BROWSER_PICKER_INSTALL_BRIDGE=1`. See
   export BROWSER_PICKER_MENU='wofi --dmenu --prompt "$BROWSER_PICKER_PROMPT"'
   ```
 
-- Python 3 + PyGObject (GTK 4) for the rules editor (`python-gobject` on Arch).
+- Python 3 for app detection, recommendations, and rules storage.
 - `xdg-utils`, `util-linux` (`setsid`).
 
 ## Configuration

@@ -7,6 +7,7 @@
   "description": "Choose which browser profile or app opens a link.",
   "kinds": ["bar-widget", "panel"],
   "activation": "on-demand",
+  "keepLoaded": true,
   "entryPoints": {
     "barWidget": "plugin/BarWidget.qml",
     "panel": "plugin/SetupPanel.qml"
