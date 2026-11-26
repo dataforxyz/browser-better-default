@@ -29,13 +29,14 @@ Item {
     property string activeTab: "rules"
     // "rules" | "suggestions"
     property string searchQuery: ""
-    property string sortMode: "site" // "site" | "priority" | "pattern" | "target"
+    property string sortMode: "priority" // "priority" | "pattern" | "target"
+    property bool groupBySite: true
     property string filterMode: "all" // "all" | "enabled" | "disabled" | "private"
     property var expandedSites: ({})
     property bool selectingRules: false
     property var selectedRules: ({})
     readonly property int selectedRuleCount: draftRules.filter(rule => selectedRules[rule.uid]).length
-    readonly property bool canReorder: sortMode === "priority" && filterMode === "all" && searchQuery.trim() === ""
+    readonly property bool canReorder: !groupBySite && sortMode === "priority" && filterMode === "all" && searchQuery.trim() === ""
     // Draft and document state
     property var browserTargets: []
     property var appTargets: []
@@ -224,19 +225,6 @@ Item {
             host = host.slice(4);
 
         return host;
-    }
-
-    function compareSites(a, b) {
-        if (a === b)
-            return 0;
-
-        if (a === "Custom patterns")
-            return 1;
-
-        if (b === "Custom patterns")
-            return -1;
-
-        return a.localeCompare(b);
     }
 
     function ruleTargetOptions(currentLabel) {
@@ -466,12 +454,7 @@ Item {
                 "siteName": ruleSite(r.pattern)
             });
         }
-        if (sortMode === "site")
-            rows.sort(function(a, b) {
-            var cmp = compareSites(a.siteName, b.siteName);
-            return cmp !== 0 ? cmp : (a.actualIndex - b.actualIndex);
-        });
-        else if (sortMode === "pattern")
+        if (sortMode === "pattern")
             rows.sort(function(a, b) {
             var cmp = String(a.pattern || "").toLowerCase().localeCompare(String(b.pattern || "").toLowerCase());
             return cmp !== 0 ? cmp : (a.actualIndex - b.actualIndex);
@@ -481,21 +464,23 @@ Item {
             var cmp = String(a.label || "").toLowerCase().localeCompare(String(b.label || "").toLowerCase());
             return cmp !== 0 ? cmp : (a.actualIndex - b.actualIndex);
         });
-        var groupCounts = {
-        };
-        if (sortMode === "site") {
-            for (var g = 0; g < rows.length; g++) {
-                var s = rows[g].siteName;
-                groupCounts[s] = (groupCounts[s] || 0) + 1;
+        const sites = new Map();
+        if (groupBySite) {
+            for (const row of rows) {
+                if (!sites.has(row.siteName))
+                    sites.set(row.siteName, []);
+                sites.get(row.siteName).push(row);
             }
+            rows.length = 0;
+            for (const group of sites.values())
+                rows.push(...group);
         }
         var lastSite = "";
         for (var k = 0; k < rows.length; k++) {
             var site = rows[k].siteName;
-            var gCount = groupCounts[site] || 0;
-            var showHdr = sortMode === "site" && gCount > 1 && site !== lastSite;
-            if (sortMode === "site")
-                lastSite = site;
+            var gCount = groupBySite ? sites.get(site).length : 0;
+            var showHdr = groupBySite && gCount > 1 && site !== lastSite;
+            lastSite = site;
 
             rows[k].showHeader = showHdr;
             rows[k].groupCount = gCount;
@@ -821,6 +806,7 @@ Item {
 
     function jumpToPriorityOrder(uid) {
         sortMode = "priority";
+        groupBySite = false;
         filterMode = "all";
         searchQuery = "";
         if (searchField && searchField.text !== "")
@@ -1278,6 +1264,18 @@ Item {
 
             }
 
+            Button {
+                text: "Group"
+                tooltipText: "Group by site · groups follow the first rule in the selected sort"
+                selected: root.groupBySite
+                bordered: true
+                focusable: true
+                onClicked: {
+                    root.groupBySite = !root.groupBySite;
+                    root.rebuildVisibleRules();
+                }
+            }
+
             Dropdown {
                 id: sortDropdown
 
@@ -1291,9 +1289,6 @@ Item {
                 accent: root.accent
                 fontFamily: root.fontFamily
                 options: [{
-                    "value": "site",
-                    "label": "By site"
-                }, {
                     "value": "priority",
                     "label": "Priority"
                 }, {
@@ -1376,7 +1371,7 @@ Item {
         // Reorder hint banner when in Priority view with active filters
         RowLayout {
             Layout.fillWidth: true
-            visible: root.activeTab === "rules" && root.sortMode === "priority" && !root.canReorder
+            visible: root.activeTab === "rules" && !root.groupBySite && root.sortMode === "priority" && !root.canReorder
             spacing: Style.spacing.md
 
             Text {
@@ -1730,7 +1725,7 @@ Item {
 
                             // Direct priority reorder controls (visible in Priority view)
                             PanelActionButton {
-                                visible: root.sortMode === "priority"
+                                visible: !root.groupBySite && root.sortMode === "priority"
                                 enabled: root.canReorder && rowDelegate.actualIndex > 0
                                 iconText: "󰅃"
                                 size: Style.space(22)
@@ -1742,7 +1737,7 @@ Item {
                             }
 
                             PanelActionButton {
-                                visible: root.sortMode === "priority"
+                                visible: !root.groupBySite && root.sortMode === "priority"
                                 enabled: root.canReorder && rowDelegate.actualIndex < root.draftRules.length - 1
                                 iconText: "󰅀"
                                 size: Style.space(22)
