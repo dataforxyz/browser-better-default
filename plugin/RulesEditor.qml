@@ -1350,13 +1350,16 @@ Item {
                 fontSize: Style.font.bodySmall
                 options: [{
                     "value": "rules",
-                    "label": "Rules (" + root.draftRules.length + ")"
+                    "label": "Rules (" + root.draftRules.length + ")",
+                    "tooltip": "View and edit link routing rules"
                 }, {
                     "value": "suggestions",
-                    "label": root.actionableSuggestionCount > 0 ? ("Suggestions (" + root.actionableSuggestionCount + ")") : "Suggestions"
+                    "label": root.actionableSuggestionCount > 0 ? ("Suggestions (" + root.actionableSuggestionCount + ")") : "Suggestions",
+                    "tooltip": "Review suggested link rules from detected apps and your choices"
                 }, {
                     "value": "settings",
-                    "label": "Settings"
+                    "label": "Settings",
+                    "tooltip": "Configure saving, fallback routing, and shortcuts"
                 }]
                 onChanged: function(nextTab) {
                     root.activeTab = nextTab;
@@ -1373,6 +1376,7 @@ Item {
             Button {
                 visible: root.statusShowRulesLink && root.activeTab !== "rules"
                 text: "View rules"
+                tooltipText: "Open the Rules tab"
                 focusable: true
                 fontSize: Style.font.bodySmall
                 onClicked: {
@@ -1407,7 +1411,7 @@ Item {
             Button {
                 visible: root.activeTab === "rules"
                 text: root.selectingRules ? "Done" : "Select"
-                tooltipText: "Select rules for bulk changes"
+                tooltipText: root.selectingRules ? "Exit selection mode and clear the selection" : "Select rules for bulk changes"
                 bordered: true
                 focusable: true
                 onClicked: {
@@ -1436,7 +1440,7 @@ Item {
                 visible: root.dirty || root._awaitingSave
                 enabled: !root.busy && root.dirty
                 text: root.busy && root._awaitingSave ? "Saving…" : "Save changes"
-                tooltipText: root.dirty ? "Save rule changes (Ctrl+S)" : "All changes saved"
+                tooltipText: "Apply rule and unmatched-link changes (Ctrl+S)"
                 selected: root.dirty && !root.busy
                 bordered: true
                 focusable: true
@@ -1466,6 +1470,7 @@ Item {
             }
             Button {
                 text: "Choose apps"
+                tooltipText: "Choose which detected apps get link rules"
                 bordered: true
                 focusable: true
                 enabled: !root.busy
@@ -1473,6 +1478,7 @@ Item {
             }
             Button {
                 text: "Skip"
+                tooltipText: "Dismiss setup. You can set up app links later in Settings."
                 focusable: true
                 onClicked: root.dismissOnboarding()
             }
@@ -1509,6 +1515,7 @@ Item {
                 visible: root.selectedRuleCount > 0 && root.selectingRules
                 enabled: !root.busy
                 placeholderText: "Set target"
+                tooltipText: "Change where all selected rules open links"
                 options: root.ruleTargetOptions("")
                 onPicked: value => root.applyBulk("target", value)
             }
@@ -1517,6 +1524,7 @@ Item {
                 enabled: !root.busy
                 Layout.preferredWidth: Style.space(110)
                 placeholderText: "Actions"
+                tooltipText: "Enable, disable, or change privacy for selected rules"
                 options: [
                     { value: "enable", label: "Enable" },
                     { value: "disable", label: "Disable" },
@@ -1660,8 +1668,9 @@ Item {
                 }
             }
 
-            Dropdown {
+            HelpDropdown {
                 id: sortDropdown
+                tooltipText: "Change display order without changing which rule matches first"
                 visible: !root.tracingUrl
 
                 showLabel: false
@@ -1691,8 +1700,9 @@ Item {
                 }
             }
 
-            Dropdown {
+            HelpDropdown {
                 id: filterDropdown
+                tooltipText: "Show all rules or filter by status or privacy"
                 visible: !root.tracingUrl
 
                 showLabel: false
@@ -1789,6 +1799,7 @@ Item {
 
             Button {
                 text: "Clear filters"
+                tooltipText: "Clear search and show all rule statuses"
                 bordered: true
                 foreground: root.foreground
                 accent: root.accent
@@ -1831,7 +1842,8 @@ Item {
                     suggestionsList.positionViewAtBeginning();
                 }
             }
-            Dropdown {
+            HelpDropdown {
+                tooltipText: "Sort suggestions by recommendation, usage, or recency"
                 Layout.preferredWidth: Style.space(132)
                 showLabel: false
                 rowHeight: suggestionSearchField.implicitHeight
@@ -1847,7 +1859,8 @@ Item {
                     suggestionsList.positionViewAtBeginning();
                 }
             }
-            Dropdown {
+            HelpDropdown {
+                tooltipText: "Filter suggestions by the kind of app or profile they open"
                 Layout.preferredWidth: Style.space(132)
                 showLabel: false
                 rowHeight: suggestionSearchField.implicitHeight
@@ -2037,12 +2050,14 @@ Item {
                                 visible: root.selectingRules
                                 checked: root.visibleSiteUids(rowDelegate.siteName).every(uid => root.selectedRules[uid])
                                 Accessible.name: "Select group"
+                                tooltipText: checked ? "Clear selection for this site" : "Select all shown rules for this site"
                                 onClicked: root.toggleSelection(root.visibleSiteUids(rowDelegate.siteName))
                             }
 
                             Button {
                                 Layout.fillWidth: true
                                 text: (rowDelegate.groupOpen ? "▾  " : "▸  ") + rowDelegate.siteName
+                                tooltipText: rowDelegate.groupOpen ? "Collapse rules for this site" : "Expand rules for this site"
                                 foreground: root.foreground
                                 fontFamily: root.fontFamily
                                 leftAlign: true
@@ -2133,6 +2148,7 @@ Item {
                                 visible: root.selectingRules
                                 checked: !!root.selectedRules[rowDelegate.uid]
                                 Accessible.name: "Select rule #" + (rowDelegate.actualIndex + 1)
+                                tooltipText: checked ? "Deselect this rule" : "Select this rule for bulk changes"
                                 onClicked: {
                                     root.selectionAnchor = rowDelegate.uid;
                                     root.toggleSelection([rowDelegate.uid]);
@@ -2302,6 +2318,7 @@ Item {
                             // Inline target selector
                             TargetPicker {
                                 id: ruleTargetPicker
+                                tooltipText: "Choose where this rule opens matching links"
 
                                 Layout.preferredWidth: root.sortMode === "priority" ? Style.space(142) : Style.space(156)
                                 Layout.minimumWidth: Style.space(96)
@@ -2418,6 +2435,7 @@ Item {
                     Layout.alignment: Qt.AlignHCenter
                     visible: root.draftRules.length > 0
                     text: "Clear filters"
+                    tooltipText: "Clear search and show all rule statuses"
                     bordered: true
                     foreground: root.foreground
                     accent: root.accent
@@ -2548,7 +2566,7 @@ Item {
                                 fontSize: Style.font.bodySmall
                                 foreground: Util.alpha(root.foreground, 0.75)
                                 focusable: true
-                                tooltipText: "Edit suggestion"
+                                tooltipText: "Review or change the link pattern, target, and privacy"
                                 onClicked: root.editingSuggestionKey = suggestionCard.suggestionKey
                             }
 
@@ -2563,7 +2581,8 @@ Item {
                                 bordered: true
                                 enabled: suggestionCard.canStage
                                 focusable: true
-                                tooltipText: "Add to rules"
+                                tooltipText: root.autosave ? "Add a rule and save it automatically"
+                                    : "Add a rule to the draft. Save changes to apply it."
                                 onClicked: root.stageSuggestion(suggestionCard.suggestionKey)
                             }
                         }
@@ -2619,6 +2638,7 @@ Item {
                                     spacing: Style.spacing.md
 
                                     TargetPicker {
+                                        tooltipText: "Choose where this suggestion opens matching links"
                                         Layout.preferredWidth: Style.space(156)
                                         Layout.minimumWidth: Style.space(104)
                                         subtle: false
@@ -2647,6 +2667,7 @@ Item {
 
                                     Button {
                                         text: "Close"
+                                        tooltipText: "Collapse the editor and keep your suggestion edits"
                                         focusable: true
                                         onClicked: root.closeSuggestionEditor()
                                     }
@@ -2666,7 +2687,8 @@ Item {
                                         iconSize: Style.font.iconSmall
                                         horizontalPadding: Style.spacing.lg
                                         verticalPadding: Style.spacing.xs
-                                        tooltipText: "Add this rule to the draft · save to apply"
+                                        tooltipText: root.autosave ? "Add a rule and save it automatically"
+                                            : "Add a rule to the draft. Save changes to apply it."
                                         onClicked: root.stageSuggestion(suggestionCard.suggestionKey)
                                     }
 
@@ -2739,6 +2761,7 @@ Item {
 
             TargetPicker {
                 id: fallbackPicker
+                tooltipText: "Choose what happens when no rule matches a link"
 
                 Layout.fillWidth: true
                 subtle: false
@@ -2771,6 +2794,7 @@ Item {
             Layout.fillWidth: true
             Button {
                 text: "Set as default link handler"
+                tooltipText: "Register Browser Picker to handle links opened from other apps"
                 bordered: true
                 focusable: true
                 enabled: !root.busy
@@ -2778,6 +2802,7 @@ Item {
             }
             Button {
                 text: "Refresh launchers"
+                tooltipText: "Reinstall Browser Picker’s desktop launchers"
                 bordered: true
                 focusable: true
                 enabled: !root.busy
@@ -2785,6 +2810,7 @@ Item {
             }
             Button {
                 text: "Rescan targets"
+                tooltipText: "Find newly installed apps and browser profiles"
                 bordered: true
                 focusable: true
                 enabled: !root.busy
@@ -2805,6 +2831,7 @@ Item {
         Button {
             visible: root.activeTab === "settings" && root.onboardingCandidates.length > 0
             text: "Set up app links"
+            tooltipText: "Choose detected apps to open matching links directly"
             bordered: true
             focusable: true
             enabled: !root.busy
@@ -2814,6 +2841,7 @@ Item {
         Button {
             visible: root.activeTab === "settings" && root.editorBackend !== ""
             text: "Scan web app profiles"
+            tooltipText: "Find web app shortcuts that can open in the last-used browser profile"
             bordered: true
             focusable: true
             onClicked: {
@@ -2836,13 +2864,14 @@ Item {
 
             Repeater {
                 model: [
-                    { label: "Repository", path: "" },
-                    { label: "Report an issue", path: "/issues/new/choose" },
-                    { label: "Open a pull request", path: "/compare" }
+                    { label: "Repository", tooltip: "Browse the source and project documentation on GitHub", path: "" },
+                    { label: "Report an issue", tooltip: "Open the GitHub issue form for bugs or feature requests", path: "/issues/new/choose" },
+                    { label: "Open a pull request", tooltip: "Compare branches on GitHub to propose a change", path: "/compare" }
                 ]
                 Button {
                     required property var modelData
                     text: modelData.label
+                    tooltipText: modelData.tooltip
                     bordered: true
                     focusable: true
                     onClicked: Qt.openUrlExternally("https://github.com/dataforxyz/browser-better-default" + modelData.path)
@@ -2890,6 +2919,7 @@ Item {
                     Layout.fillWidth: true
                     Button {
                         text: "Sync now"
+                        tooltipText: "Add missing browser-profile shortcuts to the app launcher"
                         bordered: true
                         focusable: true
                         enabled: !root.profileSyncBusy
@@ -3052,11 +3082,13 @@ Item {
                         Layout.preferredWidth: Math.min(Style.space(220), webappProfileRow.width * 0.48)
                         options: webappProfileRow.modelData.profiles
                         placeholderText: "Choose profile"
+                        tooltipText: "Choose the browser profile this web app should always use"
                         enabled: !webappProfileWorker.running
                         onPicked: val => value = val
                     }
                     Button {
                         text: "Pin profile"
+                        tooltipText: "Update this shortcut to always launch in the selected profile"
                         bordered: true
                         focusable: true
                         enabled: webappProfilePicker.value !== "" && !webappProfileWorker.running
@@ -3068,12 +3100,14 @@ Item {
                 Item { Layout.fillWidth: true }
                 Button {
                     text: "Scan again"
+                    tooltipText: "Check the current web app shortcuts again"
                     focusable: true
                     enabled: !webappProfileWorker.running
                     onClicked: webappProfilesPopup.scan()
                 }
                 Button {
                     text: "Close"
+                    tooltipText: "Close the scan results"
                     bordered: true
                     focusable: true
                     onClicked: webappProfilesPopup.close()
@@ -3136,6 +3170,7 @@ Item {
                     SelectionCheck {
                         checked: root.onboardingSelection["pattern:" + modelData.pattern] === modelData.label
                         Accessible.name: modelData.label
+                        tooltipText: checked ? "Skip this app" : "Include this app in setup"
                         onClicked: root.toggleOnboardingApp(modelData)
                     }
                     Text {
@@ -3163,11 +3198,13 @@ Item {
                 Item { Layout.fillWidth: true }
                 Button {
                     text: "Cancel"
+                    tooltipText: "Close setup without adding rules"
                     focusable: true
                     onClicked: appSetupPopup.close()
                 }
                 Button {
                     text: "Add selected rules"
+                    tooltipText: "Create link rules for the checked apps"
                     focusable: true
                     bordered: true
                     enabled: !root.busy && Object.keys(root.onboardingSelection).length > 0
@@ -3210,9 +3247,27 @@ Item {
         onClicked: shiftClicked()
     }
 
+    component HelpDropdown: Dropdown {
+        id: dropdown
+        property string tooltipText: ""
+        HoverHandler { id: dropdownHover }
+        PanelToolTip {
+            visible: dropdownHover.hovered && !dropdown.popupOpen
+            text: dropdown.tooltipText
+            fontFamily: root.fontFamily
+        }
+    }
+
     component SelectionCheck: Controls.CheckBox {
         id: selection
+        property string tooltipText: ""
+        hoverEnabled: true
         padding: 0
+        PanelToolTip {
+            visible: selection.hovered && selection.tooltipText !== ""
+            text: selection.tooltipText
+            fontFamily: root.fontFamily
+        }
         indicator: BorderSurface {
             implicitWidth: Style.space(15)
             implicitHeight: Style.space(15)
@@ -3237,6 +3292,7 @@ Item {
         property string value: ""
         property var options: []
         property string placeholderText: ""
+        property string tooltipText: ""
         property bool subtle: false
         property bool warning: false
         property color foreground: root.foreground
@@ -3332,8 +3388,10 @@ Item {
             }
 
             PanelToolTip {
-                visible: triggerMouse.containsMouse && !popup.opened && valueLabel.truncated
-                text: picker.currentLabel()
+                visible: triggerMouse.containsMouse && !popup.opened && text !== ""
+                text: valueLabel.truncated && picker.tooltipText !== ""
+                    ? picker.currentLabel() + "\n" + picker.tooltipText
+                    : (valueLabel.truncated ? picker.currentLabel() : picker.tooltipText)
                 fontFamily: picker.fontFamily
             }
 
