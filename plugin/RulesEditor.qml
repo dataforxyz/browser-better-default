@@ -26,7 +26,10 @@ Item {
     property bool profileSyncLoaded: false
     property bool profileSyncBusy: false
     property string profileSyncStatus: ""
+    property string setupProfileSyncStatus: ""
     property string defaultHandlerStatus: ""
+    property string bridgeStatus: ""
+    property bool bridgeBusy: false
     property int editingPatternUid: -1
     // Scoped Omarchy theme surface — defaults track qs.Commons live and can be
     // overridden per-instance by a host window.
@@ -147,6 +150,7 @@ Item {
     signal autosaveChosen(bool enabled)
     signal profileSyncToggled(bool enabled)
     signal profileSyncRequested()
+    signal bridgeInstallRequested()
     signal draftDiscarded()
     signal onboardingDismissed()
     signal setupRequested(bool refreshOnly)
@@ -3340,13 +3344,14 @@ Item {
                 tooltipText: "Add missing browser profile shortcuts to the app launcher"
                 bordered: true
                 focusable: true
-                enabled: !root.profileSyncBusy && !root.busy
+                enabled: !root.profileSyncBusy && !root.busy && !root.bridgeBusy
                 onClicked: root.profileSyncRequested()
             }
             Text {
                 Layout.fillWidth: true
                 text: root.profileSyncBusy ? "Checking profile shortcuts…"
-                    : (root.profileSyncStatus || "Open individual browser profiles directly from the app launcher.")
+                    : (root.setupProfileSyncStatus ? "Last result · " + root.setupProfileSyncStatus
+                        : "No recorded run. Shortcuts open individual browser profiles from the app launcher.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: root.foreground
@@ -3358,21 +3363,29 @@ Item {
                 tooltipText: "Register Browser Picker as the system handler for web and email links"
                 bordered: true
                 focusable: true
-                enabled: !root.busy && !root.profileSyncBusy
+                enabled: !root.busy && !root.profileSyncBusy && !root.bridgeBusy
                 onClicked: root.setupRequested(false)
             }
             Text {
                 Layout.fillWidth: true
-                text: root.defaultHandlerStatus || "Route links sent to the system handler through Browser Picker. This works without a browser extension."
+                text: root.defaultHandlerStatus || "No recorded run. System link routing works without a browser extension."
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
             }
+            Button {
+                text: "Install web app bridge"
+                tooltipText: "Install the extension and native host for links clicked inside Chromium web apps"
+                bordered: true
+                focusable: true
+                enabled: !root.busy && !root.profileSyncBusy && !root.bridgeBusy
+                onClicked: root.bridgeInstallRequested()
+            }
             Text {
                 Layout.fillWidth: true
-                text: "Links clicked inside Chromium-based web apps can bypass the system handler. To route those links too, install the optional web app bridge, which includes a browser extension and a native host."
+                text: root.bridgeStatus || "No recorded run. The optional bridge adds an extension and native host and updates browser flags."
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: root.foreground

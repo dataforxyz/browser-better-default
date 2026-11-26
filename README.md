@@ -180,7 +180,8 @@ you edited by hand. Set `BROWSER_PICKER_AUTO_RESCAN=0` if you do not want the pi
 
 Chromium `--app=` windows (including omarchy web apps) can open clicked links internally,
 bypassing the system default browser. If you want those links to go through browser-picker
-as well, opt into the bridge during install:
+as well, choose **Install web app bridge** in the System integration step of
+**Settings → Run recommended setup**, or opt into the bridge from the command line:
 
 ```sh
 ./install.sh --with-bridge

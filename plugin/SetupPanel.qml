@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtCore as Core
 import Quickshell
 import Quickshell.Io
 import qs.Commons as Commons
@@ -21,12 +22,12 @@ Item {
   property bool profileSyncLoaded: false
   property string profileSyncStatus: ""
   property string profileSyncAction: ""
-  property string defaultHandlerStatus: ""
   property bool settingDefaultHandler: false
   property var pendingRule: null
   property string pendingUrl: ""
   property string operation: ""
   readonly property string installer: decodeURIComponent(String(Qt.resolvedUrl("../install.sh")).replace(/^file:\/\//, ""))
+  readonly property string bridgeInstaller: decodeURIComponent(String(Qt.resolvedUrl("../extension/install-bridge.sh")).replace(/^file:\/\//, ""))
   readonly property string backend: decodeURIComponent(String(Qt.resolvedUrl("../bin/browser-picker-editor-data")).replace(/^file:\/\//, ""))
   readonly property string picker: decodeURIComponent(String(Qt.resolvedUrl("../bin/browser-picker")).replace(/^file:\/\//, ""))
 
@@ -67,8 +68,6 @@ Item {
     if (setup.running)
       return
     settingDefaultHandler = !refreshOnly
-    if (settingDefaultHandler)
-      defaultHandlerStatus = strings.t("settingDefaultHandler")
     statusKey = "working"
     errorText = ""
     setup.command = refreshOnly ? [installer, "--no-bridge", "--refresh"] : [installer, "--no-bridge"]
@@ -97,12 +96,29 @@ Item {
     if (profileSyncWorker.running)
       return
     profileSyncAction = action
-    profileSyncStatus = ""
+    if (action === "sync")
+      profileSyncStatus = ""
     profileSyncWorker.command = [backend, "profile-shortcuts", action]
     profileSyncWorker.running = true
   }
 
   Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
+
+  Core.Settings {
+    id: setupHistory
+    location: Core.StandardPaths.writableLocation(Core.StandardPaths.ConfigLocation)
+      + "/browser-picker/recommended-setup.ini"
+    category: "BrowserPickerRecommendedSetup"
+    property string profileShortcuts: ""
+    property string defaultHandler: ""
+    property string bridge: ""
+  }
+
+  function reportProfileShortcuts(message) {
+    profileSyncStatus = message
+    if (profileSyncAction === "sync")
+      setupHistory.profileShortcuts = message
+  }
 
   Process {
     id: profileSyncWorker
@@ -110,7 +126,9 @@ Item {
     stderr: StdioCollector { id: profileSyncErrors }
     onExited: function(code, status) {
       if (code !== 0 || status !== 0) {
-        root.profileSyncStatus = profileSyncErrors.text.trim() || strings.t("profileSyncFailed")
+        root.reportProfileShortcuts(profileSyncErrors.text.trim()
+          ? strings.t("profileSyncFailed") + "\n" + profileSyncErrors.text.trim()
+          : strings.t("profileSyncFailed"))
         return
       }
       try {
@@ -119,14 +137,14 @@ Item {
         root.profileSyncLoaded = true
         if (root.profileSyncAction === "sync") {
           if (result.added === 0)
-            root.profileSyncStatus = strings.t("profileSyncNone")
+            root.reportProfileShortcuts(strings.t("profileSyncNone"))
           else if (result.added === 1)
-            root.profileSyncStatus = strings.t("profileSyncOne")
+            root.reportProfileShortcuts(strings.t("profileSyncOne"))
           else
-            root.profileSyncStatus = strings.t("profileSyncAdded").arg(result.added)
+            root.reportProfileShortcuts(strings.t("profileSyncAdded").arg(result.added))
         }
       } catch (_) {
-        root.profileSyncStatus = strings.t("profileSyncFailed")
+        root.reportProfileShortcuts(strings.t("profileSyncFailed"))
       }
     }
   }
@@ -138,9 +156,20 @@ Item {
       root.statusKey = exitCode === 0 && exitStatus === 0 ? "success" : "failure"
       root.errorText = errors.text.trim()
       if (root.settingDefaultHandler)
-        root.defaultHandlerStatus = root.statusKey === "success"
+        setupHistory.defaultHandler = root.statusKey === "success"
           ? strings.t("defaultHandlerSet")
-          : (root.errorText || strings.t("defaultHandlerFailed"))
+          : strings.t("defaultHandlerFailed") + (root.errorText ? "\n" + root.errorText : "")
+    }
+  }
+
+  Process {
+    id: bridgeWorker
+    command: [root.bridgeInstaller]
+    stderr: StdioCollector { id: bridgeErrors }
+    onExited: function(code, status) {
+      setupHistory.bridge = code === 0 && status === 0
+        ? "Installed. Restart open browser and web app windows to load the bridge."
+        : "Bridge installation failed." + (bridgeErrors.text.trim() ? "\n" + bridgeErrors.text.trim() : "")
     }
   }
 
@@ -261,7 +290,15 @@ Item {
         profileSyncLoaded: root.profileSyncLoaded
         profileSyncBusy: profileSyncWorker.running
         profileSyncStatus: root.profileSyncStatus
-        defaultHandlerStatus: root.defaultHandlerStatus
+        setupProfileSyncStatus: setupHistory.profileShortcuts
+        defaultHandlerStatus: setup.running && root.settingDefaultHandler
+          ? strings.t("settingDefaultHandler") : setupHistory.defaultHandler
+        bridgeStatus: bridgeWorker.running ? "Installing bridge…" : setupHistory.bridge
+        bridgeBusy: bridgeWorker.running
+        onBridgeInstallRequested: {
+          if (!bridgeWorker.running)
+            bridgeWorker.running = true
+        }
         onProfileSyncToggled: enabled => root.updateProfileShortcuts(enabled ? "on" : "off")
         onProfileSyncRequested: root.updateProfileShortcuts("sync")
         onAutosaveChosen: enabled => {
