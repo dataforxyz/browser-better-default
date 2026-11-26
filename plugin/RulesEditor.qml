@@ -58,7 +58,28 @@ Item {
     property string traceError: ""
     property string sortMode: "priority" // "site" | "priority" | "pattern" | "target"
     property bool groupBySite: true
-    property string filterMode: "all" // "all" | "enabled" | "disabled" | "private"
+    property string filterMode: "all" // "all" | "enabled" | "disabled" | "private" | "conflicts"
+    readonly property var ruleConflicts: {
+        const firstByPattern = Object.create(null);
+        const conflicts = Object.create(null);
+        for (let i = 0; i < draftRules.length; i++) {
+            const rule = draftRules[i];
+            const pattern = rule.pattern.trim();
+            if (!rule.enabled || !pattern || invalidPatternReason(pattern))
+                continue;
+            const earlier = firstByPattern[pattern];
+            if (earlier === undefined) {
+                firstByPattern[pattern] = i;
+                continue;
+            }
+            const first = draftRules[earlier];
+            conflicts[rule.uid] = (first.label === rule.label && first.isPrivate === rule.isPrivate
+                ? "Duplicate of rule #" : "Same pattern as rule #") + (earlier + 1)
+                + ". The earlier rule is tried first.";
+        }
+        return conflicts;
+    }
+    readonly property int ruleConflictCount: Object.keys(ruleConflicts).length
     property var expandedSites: ({})
     property bool selectingRules: false
     property var selectedRules: ({})
@@ -640,6 +661,8 @@ Item {
                 allowed = !r.enabled;
             else if (filterMode === "private")
                 allowed = r.isPrivate;
+            else if (filterMode === "conflicts")
+                allowed = !!ruleConflicts[r.uid];
             if (!allowed)
                 continue;
 
@@ -1751,6 +1774,9 @@ Item {
                 }, {
                     "value": "private",
                     "label": "Private"
+                }, {
+                    "value": "conflicts",
+                    "label": "Conflicts (" + root.ruleConflictCount + ")"
                 }]
                 onChanged: function(val) {
                     root.filterMode = val;
@@ -1804,6 +1830,21 @@ Item {
 
             }
 
+        }
+
+        Button {
+            visible: root.activeTab === "rules" && !root.tracingUrl
+                && root.ruleConflictCount > 0 && root.filterMode !== "conflicts"
+            text: root.ruleConflictCount === 1 ? "1 rule conflict" : root.ruleConflictCount + " rule conflicts"
+            tooltipText: "Show enabled rules with the same pattern as an earlier rule"
+            foreground: root.urgent
+            focusable: true
+            onClicked: {
+                root.filterMode = "conflicts";
+                searchField.text = "";
+                root.searchQuery = "";
+                root.rebuildVisibleRules();
+            }
         }
 
         // Reorder hint banner when in Priority view with active filters
@@ -2019,8 +2060,14 @@ Item {
                     readonly property bool targetMissing: root.isMissingTarget(label)
                     readonly property bool invalidPrivate: isApp && isPrivate
                     readonly property string patternError: root.invalidPatternReason(pattern)
-                    readonly property bool hasWarning: targetMissing || invalidPrivate || patternError !== ""
-                    readonly property string warningText: patternError !== "" ? patternError : (invalidPrivate ? ("'" + label + "' is a local app and cannot open private windows — pick a browser or turn off Private.") : (targetMissing ? ("Target '" + label + "' not found — pick another or Rescan.") : ""))
+                    readonly property string conflictWarning: root.ruleConflicts[uid] || ""
+                    readonly property string warningText: [
+                        patternError,
+                        invalidPrivate ? "'" + label + "' is a local app. Pick a browser or turn off Private." : "",
+                        targetMissing && !invalidPrivate ? "Target '" + label + "' not found. Pick another or rescan." : "",
+                        conflictWarning
+                    ].filter(message => message !== "").join("\n")
+                    readonly property bool hasWarning: warningText !== ""
 
                     function tryClaimFocus() {
                         if (root._pendingFocusUid === rowDelegate.uid) {
