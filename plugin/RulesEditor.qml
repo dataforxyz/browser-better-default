@@ -2618,6 +2618,34 @@ Item {
             font.pixelSize: Style.font.caption
         }
 
+        PanelSectionHeader {
+            visible: root.activeTab === "settings"
+            Layout.fillWidth: true
+            text: "GitHub"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+        }
+
+        RowLayout {
+            visible: root.activeTab === "settings"
+            Layout.fillWidth: true
+
+            Repeater {
+                model: [
+                    { label: "Repository", path: "" },
+                    { label: "Report an issue", path: "/issues/new/choose" },
+                    { label: "Open a pull request", path: "/compare" }
+                ]
+                Button {
+                    required property var modelData
+                    text: modelData.label
+                    bordered: true
+                    focusable: true
+                    onClicked: Qt.openUrlExternally("https://github.com/dataforxyz/browser-better-default" + modelData.path)
+                }
+            }
+        }
+
         Item {
             visible: root.activeTab === "settings"
             Layout.fillHeight: true
