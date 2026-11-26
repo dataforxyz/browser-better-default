@@ -3363,7 +3363,16 @@ Item {
             }
             Text {
                 Layout.fillWidth: true
-                text: root.defaultHandlerStatus || "Use your Browser Picker rules for links opened from other apps."
+                text: root.defaultHandlerStatus || "Route links sent to the system handler through Browser Picker. This works without a browser extension."
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "Links clicked inside Chromium-based web apps can bypass the system handler. To route those links too, install the optional web app bridge, which includes a browser extension and a native host."
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: root.foreground
@@ -3372,6 +3381,12 @@ Item {
             }
             RowLayout {
                 Layout.fillWidth: true
+                Button {
+                    text: "Bridge setup guide"
+                    tooltipText: "Open installation instructions for the optional Chromium web app bridge"
+                    focusable: true
+                    onClicked: Qt.openUrlExternally("https://github.com/dataforxyz/browser-better-default/blob/HEAD/docs/BRIDGE.md")
+                }
                 Item { Layout.fillWidth: true }
                 Button {
                     text: "Back"
