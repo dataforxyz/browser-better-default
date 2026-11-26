@@ -29,7 +29,7 @@ Item {
     property string activeTab: "rules"
     // "rules" | "suggestions"
     property string searchQuery: ""
-    property string sortMode: "priority" // "priority" | "pattern" | "target"
+    property string sortMode: "site" // "site" | "priority" | "pattern" | "target"
     property bool groupBySite: true
     property string filterMode: "all" // "all" | "enabled" | "disabled" | "private"
     property var expandedSites: ({})
@@ -454,7 +454,15 @@ Item {
                 "siteName": ruleSite(r.pattern)
             });
         }
-        if (sortMode === "pattern")
+        if (sortMode === "site")
+            rows.sort(function(a, b) {
+                const aCustom = a.siteName === "Custom patterns";
+                const bCustom = b.siteName === "Custom patterns";
+                if (aCustom !== bCustom)
+                    return aCustom ? 1 : -1;
+                return a.siteName.localeCompare(b.siteName) || a.actualIndex - b.actualIndex;
+            });
+        else if (sortMode === "pattern")
             rows.sort(function(a, b) {
             var cmp = String(a.pattern || "").toLowerCase().localeCompare(String(b.pattern || "").toLowerCase());
             return cmp !== 0 ? cmp : (a.actualIndex - b.actualIndex);
@@ -1289,6 +1297,9 @@ Item {
                 accent: root.accent
                 fontFamily: root.fontFamily
                 options: [{
+                    "value": "site",
+                    "label": "Site A–Z"
+                }, {
                     "value": "priority",
                     "label": "Priority"
                 }, {
