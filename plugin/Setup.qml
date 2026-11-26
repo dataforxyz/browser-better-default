@@ -16,10 +16,16 @@ Item {
 
   function open() {
     opened = true
+    Qt.callLater(syncWindowVisibility)
   }
 
   function close() {
     opened = false
+    window.visible = false
+  }
+
+  function syncWindowVisibility() {
+    window.visible = opened
   }
 
   function install(refreshOnly) {
@@ -43,7 +49,7 @@ Item {
   FloatingWindow {
     id: window
     title: strings.t("title")
-    visible: root.opened
+    visible: false
     implicitWidth: 480
     implicitHeight: content.implicitHeight + 48
     color: Color.background
