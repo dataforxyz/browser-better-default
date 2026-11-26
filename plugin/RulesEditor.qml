@@ -1706,8 +1706,17 @@ Item {
                 model: visibleRulesModel
 
                 Controls.ScrollBar.vertical: Controls.ScrollBar {
+                    id: rulesScrollBar
+                    anchors.right: rulesList.right
+                    z: 1
                     policy: rulesList.contentHeight > rulesList.height
                         ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
+                    width: Style.space(9)
+                    padding: Style.space(2)
+                    contentItem: Rectangle {
+                        radius: width / 2
+                        color: Util.alpha(root.foreground, rulesScrollBar.pressed ? 0.8 : 0.48)
+                    }
                 }
 
                 delegate: Column {
@@ -1749,7 +1758,7 @@ Item {
                         if (root._pendingFocusUid === uid)
                             tryClaimFocus();
                     }
-                    width: rulesList.width
+                    width: rulesList.width - (rulesScrollBar.visible ? rulesScrollBar.width + Style.spacing.xs : 0)
                     spacing: 0
 
                     Connections {
