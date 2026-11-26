@@ -32,6 +32,7 @@ and remembers the decisions you want to make permanent.
 ## Features
 
 - **Picker on every link** — choose a browser + profile (or matching local desktop/web app) from a menu (Omarchy Quattro’s native menu, Walker, or your `BROWSER_PICKER_MENU`); the prompt shows the target URL (without query/fragment noise).
+- **Browser profiles in the app launcher** — in **Settings**, choose **Sync now** to add missing Chromium, Firefox, and Zen shortcuts. Turn on **Sync automatically** to add them during the picker's link-opening profile scan. Existing shortcuts are kept.
 - **Local apps & web apps** — automatically offers installed desktop apps when a web URL maps to them (including **T3 Code** `app.t3.codes` thread/prompt links, Spotify, Zoom, Slack, Telegram, Discord, Linear, Notion, Figma, Microsoft Teams, Steam, Signal, Matrix) plus installed Omarchy / Chromium `--app=` web apps and custom entries in `apps.conf`. Matching apps appear only for relevant URLs, work with smart-default rules and habit learning, and never clutter unrelated links.
 - **Smart defaults** — rules like `github.com/myorg/myrepo → Chromium (Work)` open
   directly, no menu. Plain text matches on **path/host boundaries** (covers a URL *and its

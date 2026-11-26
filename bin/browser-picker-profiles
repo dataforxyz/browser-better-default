@@ -14,6 +14,7 @@ CONF = os.path.join(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "browser-picker"
 )
 BROWSERS = os.path.join(CONF, "browsers.conf")
+SHORTCUTS_PREF = "sync-profile-shortcuts"
 HOME = os.path.expanduser("~")
 HEADER = (
     "# Browsers + profiles offered by the picker.\n"
@@ -36,6 +37,14 @@ def read_lines(path):
 
 def normcmd(c):
     return " ".join(c.replace('"', "").split())
+
+
+def launcher_sync_enabled():
+    try:
+        with open(os.path.join(CONF, SHORTCUTS_PREF), encoding="utf-8") as preference:
+            return preference.read(16).strip() == "on"
+    except (OSError, UnicodeError):
+        return False
 
 
 def discover_browsers():
@@ -115,6 +124,14 @@ def main(argv):
         print("Usage: browser-picker-profiles [rescan] [--quiet]", file=sys.stderr)
         return 2
     added, total = rescan()
+    if launcher_sync_enabled():
+        from browser_picker_profile_shortcuts import sync
+
+        try:
+            sync()
+        except (OSError, ValueError, AttributeError, TypeError, configparser.Error) as error:
+            if not quiet:
+                print(f"Could not sync profile shortcuts: {error}", file=sys.stderr)
     if not quiet:
         for line in added:
             print("added " + line)

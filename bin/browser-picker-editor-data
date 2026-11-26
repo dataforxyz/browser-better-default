@@ -688,6 +688,21 @@ def main(argv):
                 raise ValidationError("Autosave must be on or off.")
             atomic_write_text(os.path.join(config_dir(), "editor-autosave"), argv[1] + "\n")
             result = {"autosave": argv[1] == "on"}
+        elif cmd == "profile-shortcuts":
+            profiles_mod = _profiles_module()
+            if profiles_mod is None:
+                raise RuntimeError("Browser profiles helper not found.")
+            if len(argv) == 2 and argv[1] in ("on", "off"):
+                path = os.path.join(config_dir(), profiles_mod.SHORTCUTS_PREF)
+                atomic_write_text(path, argv[1] + "\n")
+            elif len(argv) != 2 or argv[1] not in ("status", "sync"):
+                raise ValidationError("Profile shortcuts require status, on, off, or sync.")
+            result = {"enabled": profiles_mod.launcher_sync_enabled()}
+            if argv[1] == "sync":
+                shortcuts = _load_helper("browser_picker_profile_shortcuts.py")
+                if shortcuts is None:
+                    raise RuntimeError("Profile shortcuts helper not found.")
+                result["added"] = shortcuts.sync()
         elif cmd == "trace" and len(argv) == 1:
             result = trace_url(sys.stdin.readline())
         else:

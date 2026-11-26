@@ -26,6 +26,7 @@ python3 -m py_compile \
   "$ROOT/bin/browser-picker-editor-data" \
   "$ROOT/bin/browser-picker-recommend" \
   "$ROOT/bin/browser-picker-profiles" \
+  "$ROOT/bin/browser_picker_profile_shortcuts.py" \
   "$ROOT/bin/browser-picker-host"
 
 echo "== bash unit tests =="

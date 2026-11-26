@@ -16,6 +16,10 @@ Item {
   property string pendingTrace: ""
   property string activeTrace: ""
   property var document: null
+  property bool profileSyncEnabled: false
+  property bool profileSyncLoaded: false
+  property string profileSyncStatus: ""
+  property string profileSyncAction: ""
   property var pendingRule: null
   property string pendingUrl: ""
   property string operation: ""
@@ -37,6 +41,7 @@ Item {
     } catch (_) {}
     opened = true
     editor.activeTab = "rules"
+    updateProfileShortcuts("status")
     if (!editor.dirty && !dataWorker.running)
       readOrSave("load")
     else if (document && !dataWorker.running)
@@ -80,7 +85,43 @@ Item {
     dataWorker.running = true
   }
 
+  function updateProfileShortcuts(action) {
+    if (profileSyncWorker.running)
+      return
+    profileSyncAction = action
+    profileSyncStatus = ""
+    profileSyncWorker.command = [backend, "profile-shortcuts", action]
+    profileSyncWorker.running = true
+  }
+
   Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
+
+  Process {
+    id: profileSyncWorker
+    stdout: StdioCollector { id: profileSyncOutput }
+    stderr: StdioCollector { id: profileSyncErrors }
+    onExited: function(code, status) {
+      if (code !== 0 || status !== 0) {
+        root.profileSyncStatus = profileSyncErrors.text.trim() || strings.t("profileSyncFailed")
+        return
+      }
+      try {
+        const result = JSON.parse(profileSyncOutput.text)
+        root.profileSyncEnabled = result.enabled
+        root.profileSyncLoaded = true
+        if (root.profileSyncAction === "sync") {
+          if (result.added === 0)
+            root.profileSyncStatus = strings.t("profileSyncNone")
+          else if (result.added === 1)
+            root.profileSyncStatus = strings.t("profileSyncOne")
+          else
+            root.profileSyncStatus = strings.t("profileSyncAdded").arg(result.added)
+        }
+      } catch (_) {
+        root.profileSyncStatus = strings.t("profileSyncFailed")
+      }
+    }
+  }
 
   Process {
     id: setup
@@ -200,6 +241,12 @@ Item {
         document: root.document
         allowAutosave: root.pendingUrl === "" && !root.pendingRule
         busy: dataWorker.running || setup.running
+        profileSyncEnabled: root.profileSyncEnabled
+        profileSyncLoaded: root.profileSyncLoaded
+        profileSyncBusy: profileSyncWorker.running
+        profileSyncStatus: root.profileSyncStatus
+        onProfileSyncToggled: enabled => root.updateProfileShortcuts(enabled ? "on" : "off")
+        onProfileSyncRequested: root.updateProfileShortcuts("sync")
         onAutosaveChosen: enabled => {
           root.pendingAutosave = enabled ? "on" : "off"
           root.writeSort()

@@ -74,6 +74,56 @@ class EditorDataTest(unittest.TestCase):
             f.write(text)
         return path
 
+    def test_profile_shortcuts_are_add_only_and_automatic_sync_is_opt_in(self):
+        for browser in ("chromium", "firefox", "zen-browser"):
+            _make_executable(os.path.join(self.fake_bin, browser))
+
+        chromium = os.path.join(self.xdg_config, "chromium")
+        os.makedirs(os.path.join(chromium, "Profile 1"))
+        state_path = os.path.join(chromium, "Local State")
+        state = {"profile": {"info_cache": {"Profile 1": {"name": "Work"}}}}
+        with open(state_path, "w", encoding="utf-8") as handle:
+            json.dump(state, handle)
+
+        for root in (os.path.join(self.home, ".mozilla", "firefox"),
+                     os.path.join(self.xdg_config, "zen")):
+            os.makedirs(os.path.join(root, "work"))
+            with open(os.path.join(root, "profiles.ini"), "w", encoding="utf-8") as handle:
+                handle.write("[Profile0]\nName=Work\nPath=work\n")
+
+        applications = os.path.join(self.xdg_data, "applications")
+        profiles = os.path.join(BIN_DIR, "browser-picker-profiles")
+
+        def rescan():
+            subprocess.run([sys.executable, profiles, "rescan", "--quiet"], env=self._env(), check=True)
+
+        def command(action):
+            result = self._run("profile-shortcuts", action)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        rescan()
+        self.assertEqual(os.listdir(applications), [])
+        self.assertEqual(command("sync"), {"enabled": False, "added": 3})
+        self.assertEqual(command("sync"), {"enabled": False, "added": 0})
+        shortcut = os.path.join(applications, "chromium-profile-dir-profile-1.desktop")
+        with open(shortcut, "a", encoding="utf-8") as handle:
+            handle.write("Comment=Keep my customization\n")
+
+        os.makedirs(os.path.join(chromium, "Profile 2"))
+        state["profile"]["info_cache"]["Profile 2"] = {"name": "Personal"}
+        with open(state_path, "w", encoding="utf-8") as handle:
+            json.dump(state, handle)
+
+        self.assertEqual(command("on"), {"enabled": True})
+        self.assertEqual(command("status"), {"enabled": True})
+        rescan()
+        with open(shortcut, encoding="utf-8") as handle:
+            self.assertIn("Comment=Keep my customization", handle.read())
+        self.assertIn("chromium-profile-dir-profile-2.desktop", os.listdir(applications))
+        self.assertEqual(command("off"), {"enabled": False})
+        self.assertEqual(len(os.listdir(applications)), 4)
+
     def _read_conf(self, filename):
         with open(os.path.join(self.conf_dir, filename), encoding="utf-8") as f:
             return f.read()

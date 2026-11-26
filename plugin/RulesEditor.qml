@@ -14,6 +14,10 @@ Item {
     property bool dirty: false
     property bool autosave: true
     property bool allowAutosave: true
+    property bool profileSyncEnabled: false
+    property bool profileSyncLoaded: false
+    property bool profileSyncBusy: false
+    property string profileSyncStatus: ""
     property int editingPatternUid: -1
     // Scoped Omarchy theme surface — defaults track qs.Commons live and can be
     // overridden per-instance by a host window.
@@ -108,6 +112,8 @@ Item {
     signal draftSynced()
     signal sortChosen(string order)
     signal autosaveChosen(bool enabled)
+    signal profileSyncToggled(bool enabled)
+    signal profileSyncRequested()
     signal draftDiscarded()
     signal setupRequested(bool refreshOnly)
     signal traceRequested(string request)
@@ -2616,6 +2622,64 @@ Item {
             color: Util.alpha(root.foreground, 0.65)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
+        }
+
+        Item {
+            visible: root.activeTab === "settings"
+            Layout.fillWidth: true
+            Layout.preferredHeight: profileShortcuts.implicitHeight
+
+            ColumnLayout {
+                id: profileShortcuts
+                width: parent.width
+                spacing: Style.spacing.sm
+
+                PanelSectionHeader {
+                    Layout.fillWidth: true
+                    text: "Browser profiles in the app launcher"
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: "Add a shortcut for each Chromium, Firefox, or Zen profile so you can open it directly from the app launcher. Sync only adds missing shortcuts and leaves existing ones in place."
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                }
+
+                Toggle {
+                    Layout.fillWidth: true
+                    enabled: root.profileSyncLoaded && !root.profileSyncBusy
+                    label: "Sync automatically"
+                    description: "Add missing shortcuts when Browser Picker scans profiles while opening a link."
+                    checked: root.profileSyncEnabled
+                    onClicked: root.profileSyncToggled(!root.profileSyncEnabled)
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Button {
+                        text: "Sync now"
+                        bordered: true
+                        focusable: true
+                        enabled: !root.profileSyncBusy
+                        onClicked: root.profileSyncRequested()
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: root.profileSyncBusy ? "Working…" : root.profileSyncStatus
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                    }
+                }
+            }
         }
 
         Item {
