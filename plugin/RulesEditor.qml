@@ -26,6 +26,7 @@ Item {
     property bool profileSyncLoaded: false
     property bool profileSyncBusy: false
     property string profileSyncStatus: ""
+    property string defaultHandlerStatus: ""
     property int editingPatternUid: -1
     // Scoped Omarchy theme surface — defaults track qs.Commons live and can be
     // overridden per-instance by a host window.
@@ -197,6 +198,16 @@ Item {
     function finishRecommendedSetup() {
         dismissOnboarding();
         appSetupPopup.close();
+        systemSetupPopup.close();
+    }
+
+    function advanceAppSetup() {
+        if (editorBackend === "") {
+            finishRecommendedSetup();
+            return;
+        }
+        appSetupPopup.close();
+        systemSetupPopup.open();
     }
 
     function toggleOnboardingApp(item) {
@@ -214,7 +225,7 @@ Item {
             return;
         if (!addSuggestionRules(chosen))
             return;
-        finishRecommendedSetup();
+        advanceAppSetup();
     }
 
     function traceStatus(status) {
@@ -1484,7 +1495,7 @@ Item {
             }
             Button {
                 text: "Start setup"
-                tooltipText: "Check web app profiles and choose recommended link rules"
+                tooltipText: "Review web app profiles, app rules, and system integration"
                 bordered: true
                 focusable: true
                 enabled: !root.busy
@@ -3059,7 +3070,7 @@ Item {
         contentItem: ColumnLayout {
             PanelSectionHeader {
                 Layout.fillWidth: true
-                text: webappProfilesPopup.guided ? "1 of 2 · Web app profiles" : "Web app profiles"
+                text: webappProfilesPopup.guided ? "1 of 3 · Web app profiles" : "Web app profiles"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
             }
@@ -3165,7 +3176,7 @@ Item {
 
             PanelSectionHeader {
                 Layout.fillWidth: true
-                text: root.editorBackend === "" ? "Recommended app rules" : "2 of 2 · Recommended app rules"
+                text: root.editorBackend === "" ? "Recommended app rules" : "2 of 3 · Recommended app rules"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
             }
@@ -3240,16 +3251,96 @@ Item {
                 Button {
                     readonly property bool hasSelection: root.onboardingCandidates.some(
                         item => root.onboardingSelection["pattern:" + item.pattern] === item.label)
-                    text: hasSelection ? "Add rules and finish" : "Finish"
+                    text: root.editorBackend === ""
+                        ? (hasSelection ? "Add rules and finish" : "Finish")
+                        : (hasSelection ? "Add rules and continue" : "Next")
                     tooltipText: hasSelection
                         ? (root.autosave ? "Add rules for the checked apps and save automatically"
                             : "Add rules for the checked apps to the draft")
-                        : "Finish setup without adding app rules"
+                        : "Continue without adding app rules"
                     focusable: true
                     bordered: true
                     enabled: !hasSelection || !root.busy
                     selected: enabled
-                    onClicked: hasSelection ? root.addOnboardingApps() : root.finishRecommendedSetup()
+                    onClicked: hasSelection ? root.addOnboardingApps() : root.advanceAppSetup()
+                }
+            }
+        }
+    }
+
+    Controls.Popup {
+        id: systemSetupPopup
+        anchors.centerIn: parent
+        width: Math.min(root.width - Style.space(24), Style.space(560))
+        padding: Style.space(14)
+        modal: true
+        focus: true
+        background: BorderSurface {
+            color: root.popupBackground
+            borderSpec: Border.flat(root.accent, 1)
+            radius: Style.cornerRadius
+        }
+        contentItem: ColumnLayout {
+            spacing: Style.spacing.md
+            PanelSectionHeader {
+                Layout.fillWidth: true
+                text: "3 of 3 · System integration"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+            }
+            Button {
+                text: "Create profile shortcuts"
+                tooltipText: "Add missing browser profile shortcuts to the app launcher"
+                bordered: true
+                focusable: true
+                enabled: !root.profileSyncBusy && !root.busy
+                onClicked: root.profileSyncRequested()
+            }
+            Text {
+                Layout.fillWidth: true
+                text: root.profileSyncBusy ? "Checking profile shortcuts…"
+                    : (root.profileSyncStatus || "Open individual browser profiles directly from the app launcher.")
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+            }
+            Button {
+                text: "Set as default link handler"
+                tooltipText: "Register Browser Picker as the system handler for web and email links"
+                bordered: true
+                focusable: true
+                enabled: !root.busy && !root.profileSyncBusy
+                onClicked: root.setupRequested(false)
+            }
+            Text {
+                Layout.fillWidth: true
+                text: root.defaultHandlerStatus || "Use your Browser Picker rules for links opened from other apps."
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Back"
+                    tooltipText: "Review recommended app rules"
+                    focusable: true
+                    onClicked: {
+                        systemSetupPopup.close();
+                        appSetupPopup.open();
+                    }
+                }
+                Button {
+                    text: "Finish"
+                    tooltipText: "Close recommended setup"
+                    bordered: true
+                    focusable: true
+                    onClicked: root.finishRecommendedSetup()
                 }
             }
         }

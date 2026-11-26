@@ -21,6 +21,8 @@ Item {
   property bool profileSyncLoaded: false
   property string profileSyncStatus: ""
   property string profileSyncAction: ""
+  property string defaultHandlerStatus: ""
+  property bool settingDefaultHandler: false
   property var pendingRule: null
   property string pendingUrl: ""
   property string operation: ""
@@ -62,6 +64,11 @@ Item {
   }
 
   function install(refreshOnly) {
+    if (setup.running)
+      return
+    settingDefaultHandler = !refreshOnly
+    if (settingDefaultHandler)
+      defaultHandlerStatus = strings.t("settingDefaultHandler")
     statusKey = "working"
     errorText = ""
     setup.command = refreshOnly ? [installer, "--no-bridge", "--refresh"] : [installer, "--no-bridge"]
@@ -130,6 +137,10 @@ Item {
     onExited: function(exitCode, exitStatus) {
       root.statusKey = exitCode === 0 && exitStatus === 0 ? "success" : "failure"
       root.errorText = errors.text.trim()
+      if (root.settingDefaultHandler)
+        root.defaultHandlerStatus = root.statusKey === "success"
+          ? strings.t("defaultHandlerSet")
+          : (root.errorText || strings.t("defaultHandlerFailed"))
     }
   }
 
@@ -250,6 +261,7 @@ Item {
         profileSyncLoaded: root.profileSyncLoaded
         profileSyncBusy: profileSyncWorker.running
         profileSyncStatus: root.profileSyncStatus
+        defaultHandlerStatus: root.defaultHandlerStatus
         onProfileSyncToggled: enabled => root.updateProfileShortcuts(enabled ? "on" : "off")
         onProfileSyncRequested: root.updateProfileShortcuts("sync")
         onAutosaveChosen: enabled => {
