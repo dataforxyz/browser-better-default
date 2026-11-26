@@ -542,8 +542,9 @@ Item {
             draftSynced();
             recomputeDirty();
             if (savedSuccess) {
-                statusMessage = "Saved " + buildSavePayload(draftRules, draftFallback).rules.length + " rule(s).";
+                statusMessage = "";
                 statusIsWarning = false;
+                savedIndicator.restart();
             }
         } else {
             // Preserve unsaved draft edits (e.g. after Rescan) while refreshing targets & suggestions.
@@ -1212,8 +1213,7 @@ Item {
         rebuildVisibleRules();
         rebuildSuggestions();
         editingSuggestionKey = "";
-        statusMessage = canAutosave() ? "Added to rules"
-            : "Added to rules · Save changes to apply.";
+        statusMessage = "";
         statusIsWarning = false;
         statusShowRulesLink = true;
     }
@@ -1288,6 +1288,11 @@ Item {
         id: suggestionsModel
     }
 
+    Timer {
+        id: savedIndicator
+        interval: 1600
+    }
+
     Rectangle {
         anchors.fill: parent
         color: root.background
@@ -1332,6 +1337,26 @@ Item {
 
             Item {
                 Layout.fillWidth: true
+            }
+
+            Button {
+                visible: root.statusShowRulesLink && root.activeTab !== "rules"
+                text: "View rules"
+                focusable: true
+                fontSize: Style.font.bodySmall
+                onClicked: {
+                    root.activeTab = "rules";
+                    root.statusShowRulesLink = false;
+                }
+            }
+
+            Text {
+                visible: savedIndicator.running && !root.dirty
+                text: "Saved"
+                textFormat: Text.PlainText
+                color: Util.alpha(root.foreground, 0.7)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
             }
 
             PanelActionButton {
@@ -2754,7 +2779,7 @@ Item {
         // Status / dirty / warning strip
         RowLayout {
             Layout.fillWidth: true
-            visible: root.statusMessage !== "" || root.dirty || root.busy || root.missingRuleCount > 0 || root.invalidPrivateCount > 0
+            visible: root.statusMessage !== "" || root.missingRuleCount > 0 || root.invalidPrivateCount > 0
             spacing: Style.spacing.md
 
             Text {
@@ -2773,9 +2798,6 @@ Item {
                     return Util.alpha(root.foreground, 0.68);
                 }
                 text: {
-                    if (root.busy)
-                        return root._awaitingSave ? "Saving rules…" : "Rescanning browsers and apps…";
-
                     if (root.statusMessage !== "")
                         return root.statusMessage;
 
@@ -2785,26 +2807,7 @@ Item {
                     if (root.missingRuleCount > 0)
                         return "⚠ " + root.missingRuleCount + " rule(s) reference a missing target.";
 
-                    if (root.dirty)
-                        return autosaveDelay.running ? "Autosaving…" : "Unsaved changes — press Ctrl+S or click Save.";
-
                     return "";
-                }
-            }
-
-            Button {
-                visible: root.statusShowRulesLink && root.activeTab !== "rules"
-                text: "View rules"
-                bordered: true
-                foreground: root.foreground
-                accent: root.accent
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                horizontalPadding: Style.spacing.md
-                verticalPadding: Style.spacing.xxs
-                onClicked: {
-                    root.activeTab = "rules";
-                    root.statusShowRulesLink = false;
                 }
             }
 

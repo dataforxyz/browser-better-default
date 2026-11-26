@@ -6,7 +6,6 @@
   "rules": "Link rules",
   "setup": "Settings",
   "preferenceSaveFailed": "Could not save the editor preference.",
-  "saved": "Rules saved.",
   "invalidData": "Could not read Browser Picker rules.",
   "pendingLink": "Finish the current link rule before adding another from the picker.",
   "saveFirst": "Save your edits before rescanning profiles.",
