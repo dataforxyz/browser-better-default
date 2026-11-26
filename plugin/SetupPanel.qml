@@ -79,7 +79,7 @@ Item {
     if (dataWorker.running)
       return
     operation = action
-    statusKey = "working"
+    statusKey = action === "save" ? "" : "working"
     errorText = ""
     dataWorker.command = payload ? [backend, action, JSON.stringify(payload)] : [backend, action]
     dataWorker.running = true
@@ -199,7 +199,7 @@ Item {
         root.statusKey = "invalidData"
         return
       }
-      root.statusKey = root.operation === "save" ? "saved" : ""
+      root.statusKey = ""
       if (root.operation === "save" && root.pendingUrl) {
         const url = root.pendingUrl
         root.pendingUrl = ""

@@ -261,8 +261,17 @@ def load_targets():
 
 
 def recommended_defaults(browsers, apps_mod, registry, recommender=None):
-    """Yield (pattern, label, private, title, reason) with the same policy as GTK."""
+    """Yield candidate rules with target kind, pick count, and last-use time."""
     browser_set = set(browsers)
+    recommender = recommender if recommender is not None else _recommend_module()
+    events = []
+    learned = []
+    if recommender is not None:
+        try:
+            events = recommender.load_store().get("events", [])
+            learned = recommender.learned_defaults(events, recommender.threshold())
+        except Exception:
+            events = []
     app_defaults = []
     if apps_mod is not None and registry is not None:
         try:
@@ -274,21 +283,18 @@ def recommended_defaults(browsers, apps_mod, registry, recommender=None):
     }
     for pattern, label, title in app_defaults:
         if label in scoped_apps:
-            yield pattern, label, False, title, "Detected app"
+            picks = [event for event in events if event.get("label") == label
+                     and not event.get("private")
+                     and isinstance(event.get("url"), str)
+                     and apps_mod.url_matches(pattern, event["url"])]
+            timestamp = max((event["ts"] for event in picks
+                             if type(event.get("ts")) is int), default=0)
+            yield pattern, label, False, title, "Detected app", "desktop", len(picks), timestamp
 
-    if recommender is None:
-        recommender = _recommend_module()
-    if recommender is None:
-        return
-    try:
-        events = recommender.load_store().get("events", [])
-        thresh = recommender.threshold()
-        learned = recommender.learned_defaults(events, thresh)
-    except Exception:
-        return
-
-    for pattern, label, private, count, url in learned:
+    learned_webapps = set()
+    for pattern, label, private, count, url, timestamp in learned:
         private = bool(private)
+        kind = "browser"
         if label not in browser_set:
             if (
                 label in scoped_apps
@@ -302,14 +308,27 @@ def recommended_defaults(browsers, apps_mod, registry, recommender=None):
                 matches = apps_mod.match_url(url, registry)
             except Exception:
                 continue
-            if not any(match["label"] == label for match in matches):
+            match = next((match for match in matches if match["label"] == label), None)
+            if not match:
                 continue
-        yield pattern, label, private, pattern, f"Chosen {count} times"
+            kind = "webapp" if match["kind"] == "webapp" else "desktop"
+            if kind == "webapp":
+                learned_webapps.add(label)
+        yield pattern, label, private, pattern, f"Chosen {count} times", kind, count, timestamp
+
+    if apps_mod is not None and registry is not None:
+        for app in registry["webapps"]:
+            label, host = app["label"], app["host"]
+            if label in browser_set or label in learned_webapps:
+                continue
+            if any(match["label"] == label and match["kind"] == "webapp"
+                   for match in apps_mod.match_url(f"https://{host}/", registry)):
+                yield host, label, False, host, "Installed web app", "webapp", 0, 0
 
 
 def build_suggestions(browsers, apps_mod, registry, recommender=None):
     out = []
-    for pattern, label, private, title, reason in recommended_defaults(
+    for pattern, label, private, title, reason, kind, count, timestamp in recommended_defaults(
         browsers, apps_mod, registry, recommender
     ):
         out.append(
@@ -319,6 +338,9 @@ def build_suggestions(browsers, apps_mod, registry, recommender=None):
                 "private": bool(private),
                 "title": title,
                 "reason": reason,
+                "kind": kind,
+                "uses": count,
+                "last_used": timestamp,
             }
         )
     return out

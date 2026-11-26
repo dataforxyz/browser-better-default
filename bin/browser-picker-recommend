@@ -219,8 +219,18 @@ def learned_defaults(events, threshold_n):
         if host:
             recent.setdefault((host, tuple(segs[:1])), event)
     by_host = {}
+    last_used = {}
     for event in events:
-        by_host.setdefault(event.get("host"), []).append(event)
+        host = event.get("host")
+        by_host.setdefault(host, []).append(event)
+        timestamp = event.get("ts")
+        if not host or type(timestamp) is not int:
+            continue
+        segs = event.get("segs") or []
+        label, private = _ident(event)
+        for length in range(min(len(segs), SEG_CAP) + 1):
+            key = (make_pattern(host, segs[:length]), label, private)
+            last_used[key] = max(last_used.get(key, 0), timestamp)
 
     ranked = {}
     for (host, _section), event in recent.items():
@@ -231,7 +241,7 @@ def learned_defaults(events, threshold_n):
             pattern, label, private, count = chosen
             ranked.setdefault((pattern, label, private), (count, event.get("url")))
     return sorted(
-        ((pattern, label, private, count, url)
+        ((pattern, label, private, count, url, last_used.get((pattern, label, private), 0))
          for (pattern, label, private), (count, url) in ranked.items()),
         key=lambda item: -item[3],
     )

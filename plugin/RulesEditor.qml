@@ -25,6 +25,7 @@ Item {
     property color background: Commons.Color.background
     property color accent: Commons.Color.accent
     property color urgent: Commons.Color.urgent
+    readonly property color disabledTint: urgent.r > urgent.g && urgent.r > urgent.b ? urgent : "#df7777"
     property color muted: Commons.Color.muted
     property color popupBackground: Commons.Color.popups.background
     property color popupBorder: Commons.Color.popups.border
@@ -37,6 +38,8 @@ Item {
     // "rules" | "suggestions"
     property string searchQuery: ""
     property string suggestionSearch: ""
+    property string suggestionSort: "recommended"
+    property string suggestionKind: "all"
     property string editingSuggestionKey: ""
     readonly property bool tracingUrl: /^(https?:\/\/\S+|mailto:\S+)$/i.test(searchQuery.trim())
     readonly property string traceRequest: tracingUrl
@@ -85,7 +88,7 @@ Item {
     property bool statusIsWarning: false
     property bool statusShowRulesLink: false
     readonly property bool fallbackMissing: draftFallback !== "" && browserTargets.indexOf(draftFallback) === -1
-    readonly property int actionableSuggestionCount: suggestionsModel.count
+    property int actionableSuggestionCount: 0
     readonly property int missingRuleCount: {
         var count = 0;
         for (var i = 0; i < draftRules.length; i++) {
@@ -528,6 +531,7 @@ Item {
             _automaticSave = false;
             _rescanInFlight = false;
             if (!keepSavedDraft) {
+                editingSuggestionKey = "";
                 selectedRules = {};
                 selectingRules = false;
                 editingPatternUid = -1;
@@ -544,9 +548,9 @@ Item {
             draftSynced();
             recomputeDirty();
             if (savedSuccess) {
-                statusMessage = "Saved " + buildSavePayload(draftRules, draftFallback).rules.length + " rule(s).";
+                statusMessage = "";
                 statusIsWarning = false;
-                statusShowRulesLink = false;
+                savedIndicator.restart();
             }
         } else {
             // Preserve unsaved draft edits (e.g. after Rescan) while refreshing targets & suggestions.
@@ -727,17 +731,27 @@ Item {
             var reason = raw.reason !== undefined && raw.reason !== null ? String(raw.reason).trim() : "";
             desired.push({
                 "suggestionKey": key,
-                "title": title,
+                "title": effPattern === origPattern ? title : (effPattern || "Empty pattern"),
                 "reason": reason,
                 "pattern": effPattern,
                 "label": effLabel,
-                "isPrivate": effPrivate
+                "isPrivate": effPrivate,
+                "kind": raw.kind || (root.isAppTarget(origLabel) ? "desktop" : "browser"),
+                "uses": Number(raw.uses) || 0,
+                "lastUsed": Number(raw.last_used) || 0
             });
         }
+        actionableSuggestionCount = desired.length;
         const query = suggestionSearch.trim().toLowerCase();
-        reconcileSuggestionsModel(query ? desired.filter(item =>
-            [item.title, item.pattern, item.label, item.reason].some(value => value.toLowerCase().includes(query)))
-            : desired);
+        const shown = desired.filter(item =>
+            (suggestionKind === "all" || item.kind === suggestionKind)
+            && (!query || [item.title, item.pattern, item.label, item.reason]
+                .some(value => value.toLowerCase().includes(query))));
+        if (suggestionSort === "used")
+            shown.sort((a, b) => b.uses - a.uses || b.lastUsed - a.lastUsed);
+        else if (suggestionSort === "recent")
+            shown.sort((a, b) => b.lastUsed - a.lastUsed || b.uses - a.uses);
+        reconcileSuggestionsModel(shown);
 
     }
 
@@ -1032,6 +1046,7 @@ Item {
             return ;
 
         draftRules = cloneRuleList(_baselineRules);
+        editingSuggestionKey = "";
         editingPatternUid = -1;
         selectedRules = {};
         selectingRules = false;
@@ -1060,7 +1075,8 @@ Item {
         _awaitingSave = true;
         statusMessage = "";
         statusIsWarning = false;
-        statusShowRulesLink = false;
+        if (!automatic)
+            statusShowRulesLink = false;
         saveRequested(payload.rules, payload.fallback);
     }
 
@@ -1202,7 +1218,8 @@ Item {
         recomputeDirty();
         rebuildVisibleRules();
         rebuildSuggestions();
-        statusMessage = "Added to rules · Save changes to apply.";
+        editingSuggestionKey = "";
+        statusMessage = "";
         statusIsWarning = false;
         statusShowRulesLink = true;
     }
@@ -1247,15 +1264,26 @@ Item {
             addBlankRule();
             event.accepted = true;
         } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_F) {
-            activeTab = "rules";
+            if (activeTab === "settings")
+                activeTab = "rules";
+            const field = activeTab === "suggestions" ? suggestionSearchField : searchField;
             Qt.callLater(function() {
-                if (searchField) {
-                    searchField.forceActiveFocus();
-                    searchField.selectAll();
+                if (field) {
+                    field.forceActiveFocus();
+                    field.selectAll();
                 }
             });
             event.accepted = true;
+        } else if (event.key === Qt.Key_Escape && activeTab === "suggestions" && editingSuggestionKey) {
+            closeSuggestionEditor();
+            event.accepted = true;
         }
+    }
+
+    function closeSuggestionEditor() {
+        editingSuggestionKey = "";
+        rebuildSuggestions();
+        suggestionSearchField.forceActiveFocus();
     }
 
     ListModel {
@@ -1264,6 +1292,11 @@ Item {
 
     ListModel {
         id: suggestionsModel
+    }
+
+    Timer {
+        id: savedIndicator
+        interval: 1600
     }
 
     Rectangle {
@@ -1310,6 +1343,26 @@ Item {
 
             Item {
                 Layout.fillWidth: true
+            }
+
+            Button {
+                visible: root.statusShowRulesLink && root.activeTab !== "rules"
+                text: "View rules"
+                focusable: true
+                fontSize: Style.font.bodySmall
+                onClicked: {
+                    root.activeTab = "rules";
+                    root.statusShowRulesLink = false;
+                }
+            }
+
+            Text {
+                visible: savedIndicator.running && !root.dirty
+                text: "Saved"
+                textFormat: Text.PlainText
+                color: Util.alpha(root.foreground, 0.7)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
             }
 
             PanelActionButton {
@@ -1702,14 +1755,61 @@ Item {
 
         }
 
-        TextField {
+        RowLayout {
             visible: root.activeTab === "suggestions"
             Layout.fillWidth: true
-            placeholderText: "Search suggestions…"
-            text: root.suggestionSearch
-            onTextEdited: {
-                root.suggestionSearch = text;
-                root.rebuildSuggestions();
+            spacing: Style.spacing.sm
+
+            TextField {
+                id: suggestionSearchField
+                Layout.fillWidth: true
+                Layout.minimumWidth: Style.space(90)
+                placeholderText: "Search suggestions…"
+                foreground: root.foreground
+                accent: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                horizontalPadding: Style.spacing.lg
+                verticalPadding: Style.spacing.sm
+                text: root.suggestionSearch
+                onTextEdited: {
+                    root.suggestionSearch = text;
+                    root.rebuildSuggestions();
+                    suggestionsList.positionViewAtBeginning();
+                }
+            }
+            Dropdown {
+                Layout.preferredWidth: Style.space(132)
+                showLabel: false
+                rowHeight: suggestionSearchField.implicitHeight
+                value: root.suggestionSort
+                options: [
+                    { value: "recommended", label: "Recommended" },
+                    { value: "used", label: "Most used" },
+                    { value: "recent", label: "Most recent" }
+                ]
+                onChanged: order => {
+                    root.suggestionSort = order;
+                    root.rebuildSuggestions();
+                    suggestionsList.positionViewAtBeginning();
+                }
+            }
+            Dropdown {
+                Layout.preferredWidth: Style.space(132)
+                showLabel: false
+                rowHeight: suggestionSearchField.implicitHeight
+                value: root.suggestionKind
+                options: [
+                    { value: "all", label: "All targets" },
+                    { value: "webapp", label: "Web apps" },
+                    { value: "desktop", label: "Desktop apps" },
+                    { value: "browser", label: "Browser profiles" }
+                ]
+                onChanged: kind => {
+                    root.suggestionKind = kind;
+                    root.rebuildSuggestions();
+                    suggestionsList.positionViewAtBeginning();
+                }
             }
         }
 
@@ -1919,7 +2019,10 @@ Item {
                         width: parent.width
                         visible: rowDelegate.groupOpen
                         height: visible ? Style.space(34) : 0
-                        color: root.selectingRules && root.selectedRules[rowDelegate.uid]
+                        color: !rowDelegate.enabled
+                            ? Util.alpha(root.disabledTint, root.selectingRules && root.selectedRules[rowDelegate.uid]
+                                ? 0.24 : rowHover.hovered ? 0.19 : 0.12)
+                            : root.selectingRules && root.selectedRules[rowDelegate.uid]
                             ? Util.alpha(root.accent, 0.13)
                             : Util.alpha(root.foreground, rowHover.hovered ? 0.07 : (rowDelegate.groupCount > 1 ? 0.035 : 0))
 
@@ -2093,7 +2196,7 @@ Item {
                                     trackHeight: Style.space(14)
                                     trackWidth: Style.space(26)
                                     knobSize: Style.space(8)
-                                    foreground: root.foreground
+                                    foreground: rowDelegate.enabled ? root.foreground : root.disabledTint
                                     accent: root.accent
                                     onToggled: root.setRuleEnabled(rowDelegate.uid, !rowDelegate.enabled)
                                 }
@@ -2389,13 +2492,22 @@ Item {
 
                             Button {
                                 text: "Edit"
+                                fontSize: Style.font.bodySmall
+                                foreground: Util.alpha(root.foreground, 0.75)
                                 focusable: true
                                 tooltipText: "Edit suggestion"
                                 onClicked: root.editingSuggestionKey = suggestionCard.suggestionKey
                             }
 
+                            WarningBadge {
+                                visible: suggestionCard.hasWarning
+                                tooltipText: suggestionCard.warningText
+                            }
+
                             Button {
                                 text: "Add"
+                                fontSize: Style.font.bodySmall
+                                bordered: true
                                 enabled: suggestionCard.canStage
                                 focusable: true
                                 tooltipText: "Add to rules"
@@ -2409,6 +2521,16 @@ Item {
                             Layout.fillWidth: true
                             sourceComponent: ColumnLayout {
                                 spacing: Style.spacing.xs
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    textFormat: Text.PlainText
+                                    text: suggestionCard.title + (suggestionCard.reason ? " · " + suggestionCard.reason : "")
+                                    color: Util.alpha(root.foreground, 0.75)
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption
+                                    elide: Text.ElideRight
+                                }
 
                                 TextField {
                                     id: suggPatternField
@@ -2433,7 +2555,9 @@ Item {
                                     Component.onCompleted: {
                                         text = suggestionCard.pattern;
                                         cursorPosition = 0;
+                                        forceActiveFocus();
                                     }
+                                    Keys.onEscapePressed: root.closeSuggestionEditor()
                                     onTextEdited: root.setSuggestionPattern(suggestionCard.suggestionKey, text)
                                 }
 
@@ -2469,9 +2593,9 @@ Item {
                                     }
 
                                     Button {
-                                        text: "Done"
+                                        text: "Close"
                                         focusable: true
-                                        onClicked: root.editingSuggestionKey = ""
+                                        onClicked: root.closeSuggestionEditor()
                                     }
 
                                     Button {
@@ -2513,7 +2637,8 @@ Item {
                 textFormat: Text.PlainText
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: root.suggestionSearch.trim() ? "No suggestions match your search." : "No new suggestions yet."
+                text: root.suggestionSearch.trim() || root.suggestionKind !== "all"
+                    ? "No suggestions match these filters." : "No new suggestions yet."
                 color: Util.alpha(root.foreground, 0.65)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
@@ -2624,6 +2749,34 @@ Item {
             font.pixelSize: Style.font.caption
         }
 
+        PanelSectionHeader {
+            visible: root.activeTab === "settings"
+            Layout.fillWidth: true
+            text: "GitHub"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+        }
+
+        RowLayout {
+            visible: root.activeTab === "settings"
+            Layout.fillWidth: true
+
+            Repeater {
+                model: [
+                    { label: "Repository", path: "" },
+                    { label: "Report an issue", path: "/issues/new/choose" },
+                    { label: "Open a pull request", path: "/compare" }
+                ]
+                Button {
+                    required property var modelData
+                    text: modelData.label
+                    bordered: true
+                    focusable: true
+                    onClicked: Qt.openUrlExternally("https://github.com/dataforxyz/browser-better-default" + modelData.path)
+                }
+            }
+        }
+
         Item {
             visible: root.activeTab === "settings"
             Layout.fillWidth: true
@@ -2690,7 +2843,7 @@ Item {
         // Status / dirty / warning strip
         RowLayout {
             Layout.fillWidth: true
-            visible: root.statusMessage !== "" || root.dirty || root.busy || root.missingRuleCount > 0 || root.invalidPrivateCount > 0
+            visible: root.statusMessage !== "" || root.missingRuleCount > 0 || root.invalidPrivateCount > 0
             spacing: Style.spacing.md
 
             Text {
@@ -2709,9 +2862,6 @@ Item {
                     return Util.alpha(root.foreground, 0.68);
                 }
                 text: {
-                    if (root.busy)
-                        return root._awaitingSave ? "Saving rules…" : "Rescanning browsers and apps…";
-
                     if (root.statusMessage !== "")
                         return root.statusMessage;
 
@@ -2721,26 +2871,7 @@ Item {
                     if (root.missingRuleCount > 0)
                         return "⚠ " + root.missingRuleCount + " rule(s) reference a missing target.";
 
-                    if (root.dirty)
-                        return autosaveDelay.running ? "Autosaving…" : "Unsaved changes — press Ctrl+S or click Save.";
-
                     return "";
-                }
-            }
-
-            Button {
-                visible: root.statusShowRulesLink && root.activeTab !== "rules"
-                text: "View rules"
-                bordered: true
-                foreground: root.foreground
-                accent: root.accent
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                horizontalPadding: Style.spacing.md
-                verticalPadding: Style.spacing.xxs
-                onClicked: {
-                    root.activeTab = "rules";
-                    root.statusShowRulesLink = false;
                 }
             }
 
