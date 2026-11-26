@@ -47,6 +47,9 @@ Item {
     property bool selectingRules: false
     property var selectedRules: ({})
     property var pendingRemoval: []
+    property int dragRuleUid: -1
+    property int dragTarget: -1
+    property real dragPointerY: 0
     readonly property int selectedRuleCount: draftRules.filter(rule => selectedRules[rule.uid]).length
     readonly property bool canReorder: !groupBySite && sortMode === "priority" && filterMode === "all" && searchQuery.trim() === ""
     // Draft and document state
@@ -121,7 +124,7 @@ Item {
 
     function canAutosave() {
         return autosave && allowAutosave && dirty && !busy && _hasLoadedDocument
-            && editingPatternUid < 0 && pendingRemoval.length === 0
+            && editingPatternUid < 0 && pendingRemoval.length === 0 && dragRuleUid < 0
             && draftRules.every(rule => rule.pattern.trim() && rule.label.trim()
                 && rule.label !== noneFoundLabel && !invalidPatternReason(rule.pattern)
                 && (!rule.isPrivate || !isAppTarget(rule.label)));
@@ -875,17 +878,15 @@ Item {
     }
 
     function moveRule(uid, delta) {
-        if (!canReorder)
-            return ;
+        moveRuleTo(uid, findRuleIndexByUid(uid) + delta + 1);
+    }
 
-        var idx = findRuleIndexByUid(uid);
-        if (idx < 0)
-            return ;
-
-        var targetIdx = idx + delta;
-        if (targetIdx < 0 || targetIdx >= draftRules.length)
-            return ;
-
+    function moveRuleTo(uid, position) {
+        const idx = findRuleIndexByUid(uid);
+        const targetIdx = position - 1;
+        if (!canReorder || busy || idx < 0 || !Number.isInteger(position)
+                || targetIdx < 0 || targetIdx >= draftRules.length || targetIdx === idx)
+            return;
         var next = draftRules.slice();
         var moved = next.splice(idx, 1)[0];
         next.splice(targetIdx, 0, moved);
@@ -893,6 +894,40 @@ Item {
         recomputeDirty();
         rebuildVisibleRules();
         scrollToRuleUid(uid);
+    }
+
+    function updateDragTarget() {
+        const y = Math.max(1, Math.min(rulesList.height - 1, dragPointerY));
+        const contentY = rulesList.contentY + y;
+        const index = rulesList.indexAt(Style.space(28), contentY);
+        if (index >= 0)
+            dragTarget = index;
+        else if (contentY >= rulesList.originY + rulesList.contentHeight)
+            dragTarget = draftRules.length - 1;
+    }
+
+    function finishRankDrag(commit) {
+        const uid = dragRuleUid;
+        const position = dragTarget + 1;
+        dragRuleUid = -1;
+        dragTarget = -1;
+        if (commit)
+            moveRuleTo(uid, position);
+        scheduleAutosave();
+    }
+
+    Timer {
+        interval: 24
+        repeat: true
+        running: root.dragRuleUid >= 0 && (root.dragPointerY < Style.space(30)
+            || root.dragPointerY > rulesList.height - Style.space(30))
+        onTriggered: {
+            const delta = root.dragPointerY < Style.space(30) ? -Style.space(10) : Style.space(10);
+            const top = rulesList.originY;
+            const bottom = top + Math.max(0, rulesList.contentHeight - rulesList.height);
+            rulesList.contentY = Math.max(top, Math.min(bottom, rulesList.contentY + delta));
+            root.updateDragTarget();
+        }
     }
 
     function selectedRuleUids() {
@@ -1842,6 +1877,18 @@ Item {
                             id: rowHover
                         }
 
+                        Rectangle {
+                            readonly property int sourceIndex: root.findRuleIndexByUid(root.dragRuleUid)
+                            visible: root.dragRuleUid >= 0 && root.dragTarget === rowDelegate.actualIndex
+                                && sourceIndex !== rowDelegate.actualIndex
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            y: sourceIndex > rowDelegate.actualIndex ? 0 : parent.height - height
+                            height: Style.space(2)
+                            color: root.accent
+                            z: 2
+                        }
+
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: Style.spacing.xxs
@@ -1857,8 +1904,24 @@ Item {
 
                             // Actual priority badge (#1 matches first)
                             Item {
+                                id: rank
                                 Layout.preferredWidth: Style.space(26)
                                 Layout.fillHeight: true
+                                activeFocusOnTab: true
+                                Accessible.role: Accessible.Button
+                                Accessible.name: "Priority " + (rowDelegate.actualIndex + 1)
+                                Accessible.onPressAction: activate()
+                                Keys.onReturnPressed: activate()
+                                Keys.onSpacePressed: activate()
+
+                                function activate() {
+                                    if (!root.canReorder) {
+                                        root.jumpToPriorityOrder(rowDelegate.uid);
+                                        return;
+                                    }
+                                    positionField.text = String(rowDelegate.actualIndex + 1);
+                                    positionPopup.open();
+                                }
 
                                 Text {
                                     anchors.right: parent.right
@@ -1875,17 +1938,61 @@ Item {
 
                                     anchors.fill: parent
                                     hoverEnabled: true
-                                    cursorShape: root.canReorder ? Qt.ArrowCursor : Qt.PointingHandCursor
-                                    onClicked: {
-                                        if (!root.canReorder)
-                                            root.jumpToPriorityOrder(rowDelegate.uid);
+                                    preventStealing: root.canReorder
+                                    cursorShape: root.dragRuleUid === rowDelegate.uid
+                                        ? Qt.ClosedHandCursor : root.canReorder ? Qt.OpenHandCursor : Qt.PointingHandCursor
+                                    property real startY: 0
+                                    onPressed: mouse => startY = rankMouse.mapToItem(rulesList, mouse.x, mouse.y).y
+                                    onPositionChanged: mouse => {
+                                        if (!pressed || !root.canReorder)
+                                            return;
+                                        const y = rankMouse.mapToItem(rulesList, mouse.x, mouse.y).y;
+                                        if (root.dragRuleUid < 0 && Math.abs(y - startY) < Style.space(7))
+                                            return;
+                                        root.dragRuleUid = rowDelegate.uid;
+                                        root.dragPointerY = y;
+                                        root.updateDragTarget();
+                                    }
+                                    onReleased: mouse => {
+                                        if (root.dragRuleUid === rowDelegate.uid)
+                                            root.finishRankDrag(true);
+                                        else if (containsMouse)
+                                            rank.activate();
+                                    }
+                                    onCanceled: if (root.dragRuleUid === rowDelegate.uid) root.finishRankDrag(false)
+                                }
 
+                                Controls.Popup {
+                                    id: positionPopup
+                                    y: rank.height
+                                    width: Style.space(160)
+                                    padding: Style.spacing.md
+                                    focus: true
+                                    closePolicy: Controls.Popup.CloseOnEscape | Controls.Popup.CloseOnPressOutside
+                                    onOpened: {
+                                        positionField.forceActiveFocus();
+                                        positionField.selectAll();
+                                    }
+                                    background: BorderSurface {
+                                        color: root.popupBackground
+                                        borderSpec: Border.flat(root.accent, 1)
+                                    }
+                                    contentItem: TextField {
+                                        id: positionField
+                                        placeholderText: "New position"
+                                        Accessible.name: "New rule position"
+                                        inputMethodHints: Qt.ImhDigitsOnly
+                                        validator: IntValidator { bottom: 1; top: root.draftRules.length }
+                                        onAccepted: {
+                                            root.moveRuleTo(rowDelegate.uid, Number(text));
+                                            positionPopup.close();
+                                        }
                                     }
                                 }
 
                                 PanelToolTip {
                                     visible: rankMouse.containsMouse
-                                    text: root.canReorder ? ("Match priority #" + (rowDelegate.actualIndex + 1) + " · Lowest number matches first") : ("Match priority #" + (rowDelegate.actualIndex + 1) + " · Click to switch to Priority order")
+                                    text: root.canReorder ? "Click to enter a position · Drag to reorder" : "Click to switch to Priority"
                                     fontFamily: root.fontFamily
                                 }
 
