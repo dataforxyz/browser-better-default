@@ -47,14 +47,15 @@ def launcher_sync_enabled():
         return False
 
 
-def discover_browsers():
+def discover_browsers(chromium_config=None):
     """Return [(label, command)] for installed browsers + their profiles."""
     found = []
+    config = chromium_config or f"{HOME}/.config"
     for disp, binname, base in (
-        ("Chromium", "chromium", f"{HOME}/.config/chromium"),
-        ("Brave", "brave", f"{HOME}/.config/BraveSoftware/Brave-Browser"),
-        ("Chrome", "google-chrome-stable", f"{HOME}/.config/google-chrome"),
-        ("Edge", "microsoft-edge-stable", f"{HOME}/.config/microsoft-edge"),
+        ("Chromium", "chromium", f"{config}/chromium"),
+        ("Brave", "brave", f"{config}/BraveSoftware/Brave-Browser"),
+        ("Chrome", "google-chrome-stable", f"{config}/google-chrome"),
+        ("Edge", "microsoft-edge-stable", f"{config}/microsoft-edge"),
     ):
         if not shutil.which(binname):
             continue

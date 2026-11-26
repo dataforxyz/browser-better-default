@@ -30,6 +30,9 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+from pathlib import Path
+import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -616,6 +619,139 @@ def cmd_save(raw_json):
     return _compose_state(new_raw_rules, new_revision, browsers, apps, apps_mod, registry)
 
 
+def omarchy_webapp_browser(apps):
+    if not shutil.which("omarchy-cmd-default-browser"):
+        return ""
+    desktop = subprocess.run(
+        ["omarchy-cmd-default-browser"], capture_output=True, text=True, timeout=3,
+    ).stdout.strip()
+    if not desktop.startswith(("google-chrome", "brave", "microsoft-edge",
+                               "opera", "vivaldi", "helium")):
+        desktop = "chromium.desktop"
+    if os.path.basename(desktop) != desktop:
+        return ""
+    for directory in apps.desktop_app_dirs():
+        path = Path(directory) / desktop
+        if path.is_file():
+            entry = apps._read_desktop_entry_section(path) or {}
+            return entry.get("Exec", "").split(" ", 1)[0]
+    return ""
+
+
+def webapp_profiles(selection=None):
+    apps = _apps_module()
+    profiles = _profiles_module()
+    shortcuts = _load_helper("browser_picker_profile_shortcuts.py")
+    if not all((apps, profiles, shortcuts)):
+        raise RuntimeError("Web app profile helpers are unavailable.")
+
+    applications = Path(os.environ.get("XDG_DATA_HOME") or
+                        os.path.expanduser("~/.local/share")) / "applications"
+    entries, _handlers = apps.scan_desktop_entries(
+        app_dirs=[str(applications)], mimeapps_defaults={},
+    )
+    aliases = {"brave-browser": "brave",
+               "google-chrome": "google-chrome-stable", "chromium-browser": "chromium",
+               "microsoft-edge": "microsoft-edge-stable"}
+    by_browser = {}
+    for label, command in profiles.discover_browsers(os.environ.get("XDG_CONFIG_HOME")):
+        args = shlex.split(command)
+        if len(args) == 2 and args[1].startswith("--profile-directory="):
+            directory = args[1].split("=", 1)[1]
+            if directory and not _has_forbidden_chars(directory):
+                by_browser.setdefault(args[0], []).append({"label": label, "value": directory})
+
+    wrapper_browser = None
+    results = []
+    for entry in entries.values():
+        if selection is not None and entry["id"] != selection["id"]:
+            continue
+        tokens = entry.get("tokens") or []
+        if not tokens or not apps._parse_webapp_entry(entry):
+            continue
+        if any(arg.split("=", 1)[0] in ("--profile-directory", "--user-data-dir")
+               for arg in tokens[1:]):
+            continue
+        wrapped = os.path.basename(tokens[0]) == "omarchy-launch-webapp"
+        executable = tokens[0]
+        if wrapped:
+            if len(tokens) < 2 or apps.parse_http_url(tokens[1]) is None:
+                continue
+            if wrapper_browser is None:
+                wrapper_browser = omarchy_webapp_browser(apps)
+            executable = wrapper_browser
+        browser = os.path.basename(executable)
+        if browser.startswith("google-chrome") and (
+            os.environ.get("CHROME_USER_DATA_DIR") or os.environ.get("CHROME_CONFIG_HOME")
+        ):
+            continue
+        options = by_browser.get(aliases.get(browser, browser), [])
+        resolved = shutil.which(executable) if executable else None
+        if len(options) < 2 or not resolved:
+            continue
+
+        path = Path(entry["path"])
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+                continue
+            raw = path.read_bytes()
+            content = raw.decode("utf-8")
+        except (OSError, UnicodeError):
+            continue
+
+        # Preserve all other desktop groups and metadata.
+        lines = content.splitlines(keepends=True)
+        section = ""
+        exec_lines = []
+        for index, line in enumerate(lines):
+            if line.strip().startswith("["):
+                section = line.strip()
+            if section == "[Desktop Entry]" and line.startswith("Exec="):
+                exec_lines.append(index)
+        if len(exec_lines) != 1:
+            continue
+        index = exec_lines[0]
+        match = re.fullmatch(r'Exec=("[^"]+"|[^ \t"]+)([ \t]+[^\r\n]*)(\r?\n)?', lines[index])
+        if not match or apps.parse_exec_tokens(match[1] + match[2]) != tokens:
+            continue
+
+        command, arguments = match[1], match[2]
+        if wrapped:
+            url = re.match(r'\s+("[^"]+"|[^\s"]+)(?=\s|$)', arguments)
+            if not url or apps.parse_exec_tokens(url[1]) != tokens[1:2]:
+                continue
+            command = shortcuts.desktop_exec_arg(resolved)
+            # Keep URL escapes and the original argument tail.
+            url_token = url[1]
+            app_arg = ('"--app=' + url_token[1:]) if url_token.startswith('"') else "--app=" + url_token
+            arguments = " " + app_arg + arguments[url.end():]
+
+        revision = _hash_bytes(raw + b"\0" + os.fsencode(resolved))
+        if selection is None:
+            results.append({"id": entry["id"], "name": entry["name"],
+                            "revision": revision, "profiles": options})
+            continue
+        if revision != selection["revision"]:
+            break
+        profile = selection["profile"]
+        if profile not in {option["value"] for option in options}:
+            raise ValidationError("Choose a profile from the current scan.")
+        flag = shortcuts.desktop_exec_arg("--profile-directory=" + profile)
+        lines[index] = f"Exec={command} {flag}{arguments}{match[3] or ''}"
+        current = path.lstat()
+        if (current.st_dev, current.st_ino, current.st_uid, current.st_mode) != (
+            metadata.st_dev, metadata.st_ino, metadata.st_uid, metadata.st_mode
+        ) or path.read_bytes() != raw:
+            break
+        atomic_write_text(path, "".join(lines))
+        return {"pinned": entry["id"]}
+
+    if selection is not None:
+        raise RevisionConflictError("The launcher or its browser changed. Scan again.")
+    return {"apps": sorted(results, key=lambda row: row["name"].casefold())}
+
+
 def _dump_compact_json(data):
     encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     use_ascii = encoding.lower() in ("ascii", "ansi_x3.4-1968")
@@ -730,6 +866,16 @@ def main(argv):
         elif cmd == "onboarding" and len(argv) == 1:
             atomic_write_text(os.path.join(config_dir(), "editor-onboarding"), "seen\n")
             result = {"onboarding_seen": True}
+        elif cmd == "scan-webapp-profiles" and len(argv) == 1:
+            result = webapp_profiles()
+        elif cmd == "pin-webapp-profile" and len(argv) == 2:
+            selection = json.loads(argv[1])
+            if not isinstance(selection, dict) or any(
+                not isinstance(selection.get(key), str) for key in ("id", "revision", "profile")
+            ):
+                raise ValidationError("Invalid web app profile selection.")
+            with _file_lock(os.path.join(config_dir(), ".webapp-profiles.lock")):
+                result = webapp_profiles(selection)
         elif cmd == "trace" and len(argv) == 1:
             result = trace_url(sys.stdin.readline())
         else:

@@ -243,6 +243,7 @@ Item {
         Layout.fillWidth: true
         Layout.fillHeight: true
         document: root.document
+        editorBackend: root.backend
         allowAutosave: root.pendingUrl === "" && !root.pendingRule
         busy: dataWorker.running || setup.running
         profileSyncEnabled: root.profileSyncEnabled

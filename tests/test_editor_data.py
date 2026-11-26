@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+from pathlib import Path
 import stat
 import subprocess
 import sys
@@ -73,6 +74,67 @@ class EditorDataTest(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
         return path
+
+    def test_webapp_profile_scan_and_explicit_pin(self):
+        browser = Path(self.fake_bin) / "chromium"
+        _make_executable(browser)
+        _make_executable(Path(self.fake_bin) / "omarchy-launch-webapp")
+        resolver = Path(self.fake_bin) / "omarchy-cmd-default-browser"
+        _make_executable(resolver, "#!/bin/sh\necho browser-picker.desktop\n")
+        (Path(self.xdg_data_dirs) / "applications/chromium.desktop").write_text(
+            "[Desktop Entry]\nName=Chromium\nExec=chromium %U\n"
+        )
+        config = Path(self.xdg_config) / "chromium"
+        config.mkdir()
+        (config / "Local State").write_text(json.dumps({
+            "profile": {"info_cache": {"Default": {"name": "Personal"}, "Profile 3": {"name": "Work"}}}
+        }))
+        apps = Path(self.xdg_data) / "applications"
+        launcher = apps / "meet.desktop"
+        original = (
+            '[Desktop Entry]\nName=Meet\nExec=omarchy-launch-webapp "https://example.org/?q=%%20" --incognito\n'
+            '[Desktop Action Other]\nExec=other\n'
+        )
+        launcher.write_text(original)
+        (apps / "pinned.desktop").write_text(
+            "[Desktop Entry]\nName=Pinned\nExec=chromium --app=https://example.org --profile-directory=Default\n"
+        )
+        (apps / "custom-data.desktop").write_text(
+            "[Desktop Entry]\nName=Custom\nExec=chromium --app=https://example.org --user-data-dir /tmp/example\n"
+        )
+        (apps / "linked.desktop").symlink_to(launcher)
+
+        scan = self._run("scan-webapp-profiles")
+        self.assertEqual(scan.returncode, 0, scan.stderr)
+        rows = json.loads(scan.stdout)["apps"]
+        self.assertEqual([row["id"] for row in rows], ["meet.desktop"])
+        self.assertEqual(launcher.read_text(), original)
+        self.assertFalse(os.path.exists(self.conf_dir))
+        choice = json.dumps({**rows[0], "profile": "Profile 3"})
+        launcher.write_text(original + "# edited\n")
+        stale = self._run("pin-webapp-profile", choice)
+        self.assertEqual(stale.returncode, 3, stale.stderr)
+        self.assertEqual(launcher.read_text(), original + "# edited\n")
+        launcher.write_text(original)
+        pinned = self._run("pin-webapp-profile", choice)
+        self.assertEqual(pinned.returncode, 0, pinned.stderr)
+        self.assertEqual(launcher.read_text(), original.replace(
+            'omarchy-launch-webapp "https://example.org/?q=%%20"',
+            f'"{browser}" "--profile-directory=Profile 3" "--app=https://example.org/?q=%%20"',
+        ))
+        self.assertEqual(json.loads(self._run("scan-webapp-profiles").stdout)["apps"], [])
+
+        direct = apps / "video.desktop"
+        direct.write_text(
+            "[Desktop Entry]\nName=Video\nExec=chromium --app=https://example.org --enable-features=Example\n"
+        )
+        row, = json.loads(self._run("scan-webapp-profiles").stdout)["apps"]
+        pinned = self._run("pin-webapp-profile", json.dumps({**row, "profile": "Default"}))
+        self.assertEqual(pinned.returncode, 0, pinned.stderr)
+        self.assertIn(
+            'Exec=chromium "--profile-directory=Default" --app=https://example.org --enable-features=Example',
+            direct.read_text(),
+        )
 
     def test_profile_shortcuts_are_add_only_and_automatic_sync_is_opt_in(self):
         for browser in ("chromium", "firefox", "zen-browser"):

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
+import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
@@ -10,6 +11,7 @@ Item {
 
     // Public host contract
     property var document: null
+    property string editorBackend: ""
     property bool busy: false
     property bool dirty: false
     property bool autosave: true
@@ -2809,6 +2811,17 @@ Item {
             onClicked: appSetupPopup.open()
         }
 
+        Button {
+            visible: root.activeTab === "settings" && root.editorBackend !== ""
+            text: "Scan web app profiles"
+            bordered: true
+            focusable: true
+            onClicked: {
+                webappProfilesPopup.open();
+                webappProfilesPopup.scan();
+            }
+        }
+
         PanelSectionHeader {
             visible: root.activeTab === "settings"
             Layout.fillWidth: true
@@ -2937,6 +2950,136 @@ Item {
 
         }
 
+    }
+
+    Process {
+        id: webappProfileWorker
+        stdout: StdioCollector { id: webappProfileOutput }
+        stderr: StdioCollector { id: webappProfileError }
+        onExited: function(code, status) {
+            if (code !== 0 || status !== 0) {
+                webappProfilesPopup.message = webappProfileError.text.trim() || "Could not check web app profiles.";
+                return;
+            }
+            try {
+                const result = JSON.parse(webappProfileOutput.text);
+                if (result.pinned) {
+                    webappProfilesPopup.apps = webappProfilesPopup.apps.filter(app => app.id !== result.pinned);
+                    webappProfilesPopup.message = "Launcher profile pinned.";
+                } else {
+                    webappProfilesPopup.apps = result.apps;
+                    webappProfilesPopup.message = result.apps.length
+                        ? "These launchers can use whichever browser profile was last open. Choose a profile for each app you want to pin."
+                        : "No unpinned web apps found for supported browsers with multiple profiles.";
+                }
+            } catch (error) {
+                webappProfilesPopup.message = "Could not read the web app profile scan.";
+            }
+        }
+    }
+
+    Controls.Popup {
+        id: webappProfilesPopup
+        property var apps: []
+        property string message: ""
+        function scan() {
+            if (webappProfileWorker.running)
+                return;
+            apps = [];
+            message = "Checking web app launchers…";
+            webappProfileWorker.command = [root.editorBackend, "scan-webapp-profiles"];
+            webappProfileWorker.running = true;
+        }
+        function pin(app, profile) {
+            if (webappProfileWorker.running)
+                return;
+            message = "Updating launcher…";
+            webappProfileWorker.command = [root.editorBackend, "pin-webapp-profile",
+                JSON.stringify({ id: app.id, revision: app.revision, profile: profile })];
+            webappProfileWorker.running = true;
+        }
+
+        anchors.centerIn: parent
+        width: Math.min(root.width - Style.space(24), Style.space(560))
+        height: Math.min(root.height - Style.space(24), Style.space(380))
+        padding: Style.space(14)
+        modal: true
+        focus: true
+        background: BorderSurface {
+            color: root.popupBackground
+            borderSpec: Border.flat(root.accent, 1)
+            radius: Style.cornerRadius
+        }
+        contentItem: ColumnLayout {
+            PanelSectionHeader {
+                Layout.fillWidth: true
+                text: "Web app profiles"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+            }
+            Text {
+                Layout.fillWidth: true
+                text: webappProfilesPopup.message
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+            }
+            ListView {
+                id: webappProfileList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: Style.spacing.sm
+                model: webappProfilesPopup.apps
+                Controls.ScrollBar.vertical: Controls.ScrollBar { id: webappProfileScroll }
+                delegate: RowLayout {
+                    id: webappProfileRow
+                    required property var modelData
+                    width: webappProfileList.width - (webappProfileScroll.size < 1 ? webappProfileScroll.width + spacing : 0)
+                    Text {
+                        Layout.fillWidth: true
+                        text: webappProfileRow.modelData.name
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                    }
+                    TargetPicker {
+                        id: webappProfilePicker
+                        Layout.preferredWidth: Math.min(Style.space(220), webappProfileRow.width * 0.48)
+                        options: webappProfileRow.modelData.profiles
+                        placeholderText: "Choose profile"
+                        enabled: !webappProfileWorker.running
+                        onPicked: val => value = val
+                    }
+                    Button {
+                        text: "Pin profile"
+                        bordered: true
+                        focusable: true
+                        enabled: webappProfilePicker.value !== "" && !webappProfileWorker.running
+                        onClicked: webappProfilesPopup.pin(webappProfileRow.modelData, webappProfilePicker.value)
+                    }
+                }
+            }
+            RowLayout {
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Scan again"
+                    focusable: true
+                    enabled: !webappProfileWorker.running
+                    onClicked: webappProfilesPopup.scan()
+                }
+                Button {
+                    text: "Close"
+                    bordered: true
+                    focusable: true
+                    onClicked: webappProfilesPopup.close()
+                }
+            }
+        }
     }
 
     Controls.Popup {
