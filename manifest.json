@@ -9,7 +9,7 @@
   "activation": "on-demand",
   "entryPoints": {
     "barWidget": "plugin/BarWidget.qml",
-    "panel": "plugin/Setup.qml"
+    "panel": "plugin/SetupPanel.qml"
   },
   "barWidget": {
     "displayName": "Browser Better Default",
