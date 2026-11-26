@@ -445,6 +445,7 @@ Item {
 
             rows[k].showHeader = showHdr;
             rows[k].groupCount = gCount;
+            rows[k].endsGroup = gCount > 1 && (k + 1 === rows.length || rows[k + 1].siteName !== site);
         }
         reconcileRulesModel(rows);
     }
@@ -498,6 +499,9 @@ Item {
 
                 if (cur.groupCount !== item.groupCount)
                     visibleRulesModel.setProperty(pos, "groupCount", item.groupCount);
+
+                if (cur.endsGroup !== item.endsGroup)
+                    visibleRulesModel.setProperty(pos, "endsGroup", item.endsGroup);
 
             }
         }
@@ -1366,6 +1370,7 @@ Item {
                     required property string siteName
                     required property bool showHeader
                     required property int groupCount
+                    required property bool endsGroup
                     readonly property bool isApp: root.isAppTarget(label)
                     readonly property bool targetMissing: root.isMissingTarget(label)
                     readonly property bool invalidPrivate: isApp && isPrivate
@@ -1444,7 +1449,16 @@ Item {
 
                         width: parent.width
                         height: Style.space(34)
-                        color: rowHover.hovered ? Util.alpha(root.foreground, 0.03) : "transparent"
+                        color: Util.alpha(root.foreground, rowHover.hovered ? 0.07 : (rowDelegate.groupCount > 1 ? 0.035 : 0))
+
+                        Rectangle {
+                            visible: rowDelegate.groupCount > 1
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: Style.space(2)
+                            color: Util.alpha(root.accent, 0.62)
+                        }
 
                         HoverHandler {
                             id: rowHover
@@ -1630,6 +1644,11 @@ Item {
                         width: parent.width
                         foreground: root.foreground
                         strength: 0.08
+                    }
+
+                    Item {
+                        width: parent.width
+                        height: rowDelegate.endsGroup ? Style.space(12) : 0
                     }
 
                 }
