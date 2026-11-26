@@ -183,6 +183,22 @@ Item {
         }
     }
 
+    function startRecommendedSetup() {
+        onboardingSelection = {};
+        if (editorBackend === "") {
+            appSetupPopup.open();
+            return;
+        }
+        webappProfilesPopup.guided = true;
+        webappProfilesPopup.open();
+        webappProfilesPopup.scan();
+    }
+
+    function finishRecommendedSetup() {
+        dismissOnboarding();
+        appSetupPopup.close();
+    }
+
     function toggleOnboardingApp(item) {
         const next = Object.assign({}, onboardingSelection);
         if (next["pattern:" + item.pattern] === item.label)
@@ -198,8 +214,7 @@ Item {
             return;
         if (!addSuggestionRules(chosen))
             return;
-        dismissOnboarding();
-        appSetupPopup.close();
+        finishRecommendedSetup();
     }
 
     function traceStatus(status) {
@@ -1456,12 +1471,11 @@ Item {
 
         RowLayout {
             Layout.fillWidth: true
-            visible: root.activeTab === "rules" && !root.onboardingSeen && root.onboardingCandidates.length > 0
+            visible: root.activeTab === "rules" && root._hasLoadedDocument && !root.onboardingSeen
             spacing: Style.spacing.md
             Text {
                 Layout.fillWidth: true
-                text: root.onboardingCandidates.some(item => item.label === "Zoom")
-                    ? "Set up links for Zoom and other detected apps?" : "Set up links for your installed apps?"
+                text: "Run the recommended one-time setup?"
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 color: root.foreground
@@ -1469,12 +1483,12 @@ Item {
                 font.pixelSize: Style.font.bodySmall
             }
             Button {
-                text: "Choose apps"
-                tooltipText: "Choose which detected apps get link rules"
+                text: "Start setup"
+                tooltipText: "Check web app profiles and choose recommended link rules"
                 bordered: true
                 focusable: true
                 enabled: !root.busy
-                onClicked: appSetupPopup.open()
+                onClicked: root.startRecommendedSetup()
             }
             Button {
                 text: "Skip"
@@ -2829,13 +2843,13 @@ Item {
         }
 
         Button {
-            visible: root.activeTab === "settings" && root.onboardingCandidates.length > 0
-            text: "Set up app links"
-            tooltipText: "Choose detected apps to open matching links directly"
+            visible: root.activeTab === "settings"
+            text: "Run recommended setup"
+            tooltipText: "Review web app profiles and recommended link rules again"
             bordered: true
             focusable: true
             enabled: !root.busy
-            onClicked: appSetupPopup.open()
+            onClicked: root.startRecommendedSetup()
         }
 
         Button {
@@ -2845,6 +2859,7 @@ Item {
             bordered: true
             focusable: true
             onClicked: {
+                webappProfilesPopup.guided = false;
                 webappProfilesPopup.open();
                 webappProfilesPopup.scan();
             }
@@ -2999,7 +3014,7 @@ Item {
                 } else {
                     webappProfilesPopup.apps = result.apps;
                     webappProfilesPopup.message = result.apps.length
-                        ? "These launchers can use whichever browser profile was last open. Choose a profile for each app you want to pin."
+                        ? "Choose a profile for each launcher you want to pin."
                         : "No unpinned web apps found for supported browsers with multiple profiles.";
                 }
             } catch (error) {
@@ -3010,6 +3025,7 @@ Item {
 
     Controls.Popup {
         id: webappProfilesPopup
+        property bool guided: false
         property var apps: []
         property string message: ""
         function scan() {
@@ -3043,9 +3059,18 @@ Item {
         contentItem: ColumnLayout {
             PanelSectionHeader {
                 Layout.fillWidth: true
-                text: "Web app profiles"
+                text: webappProfilesPopup.guided ? "1 of 2 · Web app profiles" : "Web app profiles"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "Omarchy web apps without a pinned profile can open in whichever browser profile was used last. Pin a profile to keep each app in the right one."
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
             }
             Text {
                 Layout.fillWidth: true
@@ -3106,11 +3131,16 @@ Item {
                     onClicked: webappProfilesPopup.scan()
                 }
                 Button {
-                    text: "Close"
-                    tooltipText: "Close the scan results"
+                    text: webappProfilesPopup.guided ? "Next" : "Close"
+                    tooltipText: webappProfilesPopup.guided ? "Continue to recommended app rules" : "Close the scan results"
                     bordered: true
                     focusable: true
-                    onClicked: webappProfilesPopup.close()
+                    enabled: !webappProfilesPopup.guided || !webappProfileWorker.running
+                    onClicked: {
+                        webappProfilesPopup.close();
+                        if (webappProfilesPopup.guided)
+                            appSetupPopup.open();
+                    }
                 }
             }
         }
@@ -3124,7 +3154,6 @@ Item {
         padding: Style.space(14)
         modal: true
         focus: true
-        onAboutToShow: root.onboardingSelection = {}
         background: BorderSurface {
             color: root.popupBackground
             borderSpec: Border.flat(root.accent, 1)
@@ -3136,14 +3165,16 @@ Item {
 
             PanelSectionHeader {
                 Layout.fillWidth: true
-                text: "Set up app links"
+                text: root.editorBackend === "" ? "Recommended app rules" : "2 of 2 · Recommended app rules"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
             }
 
             Text {
                 Layout.fillWidth: true
-                text: "Choose apps to open their matching links directly."
+                text: root.onboardingCandidates.length > 0
+                    ? "Choose detected apps to open matching links directly. For example, a Zoom meeting link can open in Zoom."
+                    : "There are no new recommended app rules to add."
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 color: root.foreground
@@ -3197,19 +3228,28 @@ Item {
                 Layout.fillWidth: true
                 Item { Layout.fillWidth: true }
                 Button {
-                    text: "Cancel"
-                    tooltipText: "Close setup without adding rules"
+                    text: root.editorBackend === "" ? "Cancel" : "Back"
+                    tooltipText: root.editorBackend === "" ? "Close setup" : "Return to the web app profile scan"
                     focusable: true
-                    onClicked: appSetupPopup.close()
+                    onClicked: {
+                        appSetupPopup.close();
+                        if (root.editorBackend !== "")
+                            webappProfilesPopup.open();
+                    }
                 }
                 Button {
-                    text: "Add selected rules"
-                    tooltipText: "Create link rules for the checked apps"
+                    readonly property bool hasSelection: root.onboardingCandidates.some(
+                        item => root.onboardingSelection["pattern:" + item.pattern] === item.label)
+                    text: hasSelection ? "Add rules and finish" : "Finish"
+                    tooltipText: hasSelection
+                        ? (root.autosave ? "Add rules for the checked apps and save automatically"
+                            : "Add rules for the checked apps to the draft")
+                        : "Finish setup without adding app rules"
                     focusable: true
                     bordered: true
-                    enabled: !root.busy && Object.keys(root.onboardingSelection).length > 0
+                    enabled: !hasSelection || !root.busy
                     selected: enabled
-                    onClicked: root.addOnboardingApps()
+                    onClicked: hasSelection ? root.addOnboardingApps() : root.finishRecommendedSetup()
                 }
             }
         }
