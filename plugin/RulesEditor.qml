@@ -84,7 +84,7 @@ Item {
     property bool statusIsWarning: false
     property bool statusShowRulesLink: false
     readonly property bool fallbackMissing: draftFallback !== "" && browserTargets.indexOf(draftFallback) === -1
-    readonly property int actionableSuggestionCount: suggestionsModel.count
+    property int actionableSuggestionCount: 0
     readonly property int missingRuleCount: {
         var count = 0;
         for (var i = 0; i < draftRules.length; i++) {
@@ -525,6 +525,7 @@ Item {
             _automaticSave = false;
             _rescanInFlight = false;
             if (!keepSavedDraft) {
+                editingSuggestionKey = "";
                 selectedRules = {};
                 selectingRules = false;
                 editingPatternUid = -1;
@@ -543,7 +544,6 @@ Item {
             if (savedSuccess) {
                 statusMessage = "Saved " + buildSavePayload(draftRules, draftFallback).rules.length + " rule(s).";
                 statusIsWarning = false;
-                statusShowRulesLink = false;
             }
         } else {
             // Preserve unsaved draft edits (e.g. after Rescan) while refreshing targets & suggestions.
@@ -724,7 +724,7 @@ Item {
             var reason = raw.reason !== undefined && raw.reason !== null ? String(raw.reason).trim() : "";
             desired.push({
                 "suggestionKey": key,
-                "title": title,
+                "title": effPattern === origPattern ? title : (effPattern || "Empty pattern"),
                 "reason": reason,
                 "pattern": effPattern,
                 "label": effLabel,
@@ -734,6 +734,7 @@ Item {
                 "lastUsed": Number(raw.last_used) || 0
             });
         }
+        actionableSuggestionCount = desired.length;
         const query = suggestionSearch.trim().toLowerCase();
         const shown = desired.filter(item =>
             (suggestionKind === "all" || item.kind === suggestionKind)
@@ -1038,6 +1039,7 @@ Item {
             return ;
 
         draftRules = cloneRuleList(_baselineRules);
+        editingSuggestionKey = "";
         editingPatternUid = -1;
         selectedRules = {};
         selectingRules = false;
@@ -1066,7 +1068,8 @@ Item {
         _awaitingSave = true;
         statusMessage = "";
         statusIsWarning = false;
-        statusShowRulesLink = false;
+        if (!automatic)
+            statusShowRulesLink = false;
         saveRequested(payload.rules, payload.fallback);
     }
 
@@ -1208,7 +1211,9 @@ Item {
         recomputeDirty();
         rebuildVisibleRules();
         rebuildSuggestions();
-        statusMessage = "Added to rules · Save changes to apply.";
+        editingSuggestionKey = "";
+        statusMessage = canAutosave() ? "Added to rules"
+            : "Added to rules · Save changes to apply.";
         statusIsWarning = false;
         statusShowRulesLink = true;
     }
@@ -1253,15 +1258,26 @@ Item {
             addBlankRule();
             event.accepted = true;
         } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_F) {
-            activeTab = "rules";
+            if (activeTab === "settings")
+                activeTab = "rules";
+            const field = activeTab === "suggestions" ? suggestionSearchField : searchField;
             Qt.callLater(function() {
-                if (searchField) {
-                    searchField.forceActiveFocus();
-                    searchField.selectAll();
+                if (field) {
+                    field.forceActiveFocus();
+                    field.selectAll();
                 }
             });
             event.accepted = true;
+        } else if (event.key === Qt.Key_Escape && activeTab === "suggestions" && editingSuggestionKey) {
+            closeSuggestionEditor();
+            event.accepted = true;
         }
+    }
+
+    function closeSuggestionEditor() {
+        editingSuggestionKey = "";
+        rebuildSuggestions();
+        suggestionSearchField.forceActiveFocus();
     }
 
     ListModel {
@@ -1718,6 +1734,12 @@ Item {
                 Layout.fillWidth: true
                 Layout.minimumWidth: Style.space(90)
                 placeholderText: "Search suggestions…"
+                foreground: root.foreground
+                accent: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                horizontalPadding: Style.spacing.lg
+                verticalPadding: Style.spacing.sm
                 text: root.suggestionSearch
                 onTextEdited: {
                     root.suggestionSearch = text;
@@ -2439,13 +2461,22 @@ Item {
 
                             Button {
                                 text: "Edit"
+                                fontSize: Style.font.bodySmall
+                                foreground: Util.alpha(root.foreground, 0.75)
                                 focusable: true
                                 tooltipText: "Edit suggestion"
                                 onClicked: root.editingSuggestionKey = suggestionCard.suggestionKey
                             }
 
+                            WarningBadge {
+                                visible: suggestionCard.hasWarning
+                                tooltipText: suggestionCard.warningText
+                            }
+
                             Button {
                                 text: "Add"
+                                fontSize: Style.font.bodySmall
+                                bordered: true
                                 enabled: suggestionCard.canStage
                                 focusable: true
                                 tooltipText: "Add to rules"
@@ -2459,6 +2490,16 @@ Item {
                             Layout.fillWidth: true
                             sourceComponent: ColumnLayout {
                                 spacing: Style.spacing.xs
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    textFormat: Text.PlainText
+                                    text: suggestionCard.title + (suggestionCard.reason ? " · " + suggestionCard.reason : "")
+                                    color: Util.alpha(root.foreground, 0.75)
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption
+                                    elide: Text.ElideRight
+                                }
 
                                 TextField {
                                     id: suggPatternField
@@ -2483,7 +2524,9 @@ Item {
                                     Component.onCompleted: {
                                         text = suggestionCard.pattern;
                                         cursorPosition = 0;
+                                        forceActiveFocus();
                                     }
+                                    Keys.onEscapePressed: root.closeSuggestionEditor()
                                     onTextEdited: root.setSuggestionPattern(suggestionCard.suggestionKey, text)
                                 }
 
@@ -2519,9 +2562,9 @@ Item {
                                     }
 
                                     Button {
-                                        text: "Done"
+                                        text: "Close"
                                         focusable: true
-                                        onClicked: root.editingSuggestionKey = ""
+                                        onClicked: root.closeSuggestionEditor()
                                     }
 
                                     Button {
