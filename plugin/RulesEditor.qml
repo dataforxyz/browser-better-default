@@ -1228,14 +1228,14 @@ Item {
 
             Item {
                 Layout.fillWidth: true
-                Layout.minimumWidth: Style.space(130)
+                Layout.minimumWidth: Style.space(92)
                 implicitHeight: searchField.implicitHeight
 
                 TextField {
                     id: searchField
 
                     anchors.fill: parent
-                    placeholderText: "Filter patterns or targets…"
+                    placeholderText: "Search rules…"
                     foreground: root.foreground
                     accent: root.accent
                     font.family: root.fontFamily
@@ -1277,15 +1277,62 @@ Item {
 
             }
 
-            Button {
-                text: "Group"
-                tooltipText: "Group by site · groups follow the first rule in the selected sort"
-                selected: root.groupBySite
-                bordered: true
-                focusable: true
-                onClicked: {
+            Item {
+                id: groupControl
+                implicitWidth: groupContents.implicitWidth + Style.space(8)
+                implicitHeight: searchField.implicitHeight
+                activeFocusOnTab: true
+                Accessible.role: Accessible.CheckBox
+                Accessible.name: "Group by site"
+                Accessible.checkable: true
+                Accessible.checked: root.groupBySite
+                Accessible.onPressAction: toggle()
+                Keys.onSpacePressed: toggle()
+                Keys.onReturnPressed: toggle()
+
+                function toggle() {
                     root.groupBySite = !root.groupBySite;
                     root.rebuildVisibleRules();
+                }
+
+                BorderSurface {
+                    anchors.fill: parent
+                    visible: groupControl.activeFocus
+                    borderSpec: Border.controlSpec("focus", root.foreground, root.accent)
+                    color: "transparent"
+                }
+
+                Row {
+                    id: groupContents
+                    anchors.centerIn: parent
+                    spacing: Style.spacing.xs
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Group"
+                        textFormat: Text.PlainText
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                    }
+                    ToggleSwitch {
+                        anchors.verticalCenter: parent.verticalCenter
+                        checked: root.groupBySite
+                        interactive: false
+                        trackHeight: Style.space(14)
+                        foreground: root.foreground
+                        accent: root.accent
+                    }
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    hoverEnabled: true
+                    onClicked: groupControl.toggle()
+                    id: groupMouse
+                }
+                PanelToolTip {
+                    visible: groupMouse.containsMouse
+                    text: "Group by site"
                 }
             }
 
@@ -1351,6 +1398,7 @@ Item {
             }
 
             Item {
+                visible: root.searchQuery.trim() !== "" || root.filterMode !== "all"
                 implicitWidth: countLabel.implicitWidth + Style.spacing.xs * 2
                 implicitHeight: searchField.implicitHeight
 
