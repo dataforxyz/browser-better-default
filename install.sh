@@ -8,10 +8,11 @@ BIN="$HOME/.local/bin"
 APPS="$HOME/.local/share/applications"
 CFG="${XDG_CONFIG_HOME:-$HOME/.config}/browser-picker"
 INSTALL_BRIDGE="${BROWSER_PICKER_INSTALL_BRIDGE:-0}"
+SET_DEFAULT=1
 
 usage() {
   cat <<'EOF'
-Usage: ./install.sh [--with-bridge|--no-bridge]
+Usage: ./install.sh [--with-bridge|--no-bridge] [--refresh]
 
 Installs the core browser-picker link handler by default.
 
@@ -20,6 +21,7 @@ Options:
                   This edits user-level Chromium flags files and installs a
                   native-messaging host; see docs/BRIDGE.md.
   --no-bridge     Core install only (default).
+  --refresh       Refresh the launchers and symlinks without changing link defaults.
   -h, --help      Show this help.
 
 Environment:
@@ -33,6 +35,8 @@ while [ "$#" -gt 0 ]; do
       INSTALL_BRIDGE=1 ;;
     --no-bridge|--without-bridge)
       INSTALL_BRIDGE=0 ;;
+    --refresh)
+      SET_DEFAULT=0 ;;
     -h|--help)
       usage
       exit 0 ;;
@@ -73,11 +77,20 @@ update-desktop-database "$APPS" 2>/dev/null || true
 [ -f "$CFG/rules.conf" ]    || cp "$REPO/config/rules.conf.example"    "$CFG/rules.conf"
 [ -f "$CFG/apps.conf" ]     || cp "$REPO/config/apps.conf.example"     "$CFG/apps.conf"
 
-# Make the picker the default for web links.
-command -v xdg-settings >/dev/null 2>&1 && \
-  xdg-settings set default-web-browser browser-picker.desktop 2>/dev/null || true
-xdg-mime default browser-picker.desktop \
-  x-scheme-handler/http x-scheme-handler/https x-scheme-handler/mailto 2>/dev/null || true
+# Make the picker the default for links on request.
+if [ "$SET_DEFAULT" = "1" ]; then
+  if command -v xdg-settings >/dev/null 2>&1; then
+    xdg-settings set default-web-browser browser-picker.desktop 2>/dev/null || true
+  fi
+  link_types=(x-scheme-handler/http x-scheme-handler/https x-scheme-handler/mailto)
+  xdg-mime default browser-picker.desktop "${link_types[@]}"
+  for link_type in "${link_types[@]}"; do
+    if [ "$(xdg-mime query default "$link_type")" != browser-picker.desktop ]; then
+      echo "Could not set Browser Picker as the default for $link_type." >&2
+      exit 1
+    fi
+  done
+fi
 
 cat <<EOF
 Installed browser-picker.

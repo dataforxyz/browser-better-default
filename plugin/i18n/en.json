@@ -1,0 +1,9 @@
+{
+  "title": "Browser Better Default",
+  "description": "Set Browser Picker as the default for web and email links, or refresh its launchers and command shortcuts.",
+  "setDefault": "Set as default link handler",
+  "refresh": "Refresh launchers",
+  "working": "Setting up Browser Picker…",
+  "success": "Browser Picker is ready.",
+  "failure": "Browser Picker setup failed."
+}

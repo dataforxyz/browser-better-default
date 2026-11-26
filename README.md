@@ -53,6 +53,44 @@ and remembers the decisions you want to make permanent.
 
 ## Install
 
+### Omarchy Quattro (recommended)
+
+```sh
+omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable
+```
+
+Open **Browser Better Default** from the bar's tray and click **Set as default
+link handler**. This registers Browser Picker for web and email links. If the
+tray is hidden, open the setup window from a terminal:
+
+```sh
+omarchy-shell shell summon browser-better-default '{}'
+```
+
+To move an existing install into the plugin checkout, use **Refresh launchers**
+in the setup window. It repoints the commands to the plugin checkout, preserving
+your rules, profiles, and current link defaults.
+
+### Update on Omarchy
+
+```sh
+omarchy plugin update browser-better-default
+```
+
+The installed commands follow the plugin checkout, so picker code updates apply
+right away. If a release changes desktop entries or adds a command, open the
+setup window and click **Refresh launchers** to apply those changes.
+
+If you use the optional [Chromium web-app bridge](docs/BRIDGE.md), set it up from
+`~/.config/omarchy/plugins/browser-better-default` so it follows that checkout
+too. When migrating an existing bridge, replace its old extension path in the
+browser flags (or in the unpacked extension settings) with the plugin checkout's
+`extension/` path, then restart the browser.
+
+### Manual install
+
+Use this method on other Linux desktops, or to run from your own checkout:
+
 ```sh
 git clone https://github.com/dataforxyz/browser-better-default
 cd browser-better-default
@@ -71,6 +109,9 @@ existing config), and registers the picker as the default web/link handler for `
 
 > Ensure `~/.local/bin` is on your `PATH`. Because the install uses symlinks, keep the clone
 > around (or reinstall from the new location if you move it).
+
+To update a manual install, run `git pull --ff-only` and then
+`./install.sh --refresh` from the checkout.
 
 ### What the installer changes
 
