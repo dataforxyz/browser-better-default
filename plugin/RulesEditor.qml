@@ -1045,7 +1045,7 @@ Item {
         recomputeDirty();
         rebuildVisibleRules();
         rebuildSuggestions();
-        statusMessage = "Staged '" + pat + "' → " + lbl + " · Save to apply.";
+        statusMessage = "Added to rules · Save changes to apply.";
         statusIsWarning = false;
         statusShowRulesLink = true;
     }
@@ -1138,6 +1138,9 @@ Item {
                 }, {
                     "value": "suggestions",
                     "label": root.actionableSuggestionCount > 0 ? ("Suggestions (" + root.actionableSuggestionCount + ")") : "Suggestions"
+                }, {
+                    "value": "settings",
+                    "label": "Settings"
                 }]
                 onChanged: function(nextTab) {
                     root.activeTab = nextTab;
@@ -1166,21 +1169,6 @@ Item {
             }
 
             Button {
-                enabled: !root.busy
-                iconText: "󰑐"
-                iconSpinning: root.busy && root._rescanInFlight
-                tooltipText: "Rescan installed browsers, profiles, and local apps"
-                bordered: true
-                focusable: true
-                foreground: root.foreground
-                accent: root.accent
-                fontFamily: root.fontFamily
-                iconSize: Style.font.iconSmall
-                horizontalPadding: Style.spacing.md
-                onClicked: root.requestRescan()
-            }
-
-            Button {
                 visible: root.activeTab === "rules"
                 text: root.selectingRules ? "Done" : "Select"
                 tooltipText: "Select rules for bulk changes"
@@ -1193,6 +1181,7 @@ Item {
             }
 
             Button {
+                visible: root.activeTab === "rules" && !root.selectingRules
                 iconText: "󰐕"
                 text: "Add"
                 tooltipText: "Add a new rule (Ctrl+N)"
@@ -1208,9 +1197,9 @@ Item {
             }
 
             Button {
+                visible: root.dirty || root._awaitingSave
                 enabled: !root.busy && root.dirty
-                opacity: enabled ? 1 : 0.55
-                text: root.busy && root._awaitingSave ? "Saving…" : (root.dirty ? "Save" : "Saved")
+                text: root.busy && root._awaitingSave ? "Saving…" : "Save changes"
                 tooltipText: root.dirty ? "Save rule changes (Ctrl+S)" : "All changes saved"
                 selected: root.dirty && !root.busy
                 bordered: true
@@ -1229,15 +1218,27 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             visible: root.activeTab === "rules" && root.selectingRules && !root.tracingUrl
+            Layout.preferredHeight: searchField.implicitHeight
             spacing: Style.spacing.sm
 
             Text {
                 visible: root.selectingRules
                 text: root.selectedRuleCount + " selected"
                 textFormat: Text.PlainText
-                color: root.muted
+                color: Util.alpha(root.foreground, 0.85)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
+            }
+            Button {
+                text: "All"
+                tooltipText: "Select or clear all filtered rules"
+                focusable: true
+                onClicked: {
+                    const uids = [];
+                    for (let i = 0; i < visibleRulesModel.count; i++)
+                        uids.push(visibleRulesModel.get(i).uid);
+                    root.toggleSelection(uids);
+                }
             }
             Item { Layout.fillWidth: true }
             TargetPicker {
@@ -1252,6 +1253,7 @@ Item {
                 Button {
                     required property string modelData
                     text: modelData
+                    foreground: modelData === "Remove" ? root.urgent : root.foreground
                     focusable: true
                     enabled: !root.busy
                     onClicked: root.applyBulk(modelData === "Remove" ? "remove" : "enable", modelData === "Enable")
@@ -1261,7 +1263,8 @@ Item {
 
         RowLayout {
             Layout.fillWidth: true
-            visible: root.activeTab === "rules"
+            visible: root.activeTab === "rules" && (!root.selectingRules || root.tracingUrl)
+            Layout.preferredHeight: searchField.implicitHeight
             spacing: Style.spacing.md
 
             Item {
@@ -1438,6 +1441,20 @@ Item {
                 }
             }
 
+            Button {
+                visible: !root.tracingUrl && !root.canReorder
+                text: "Reorder"
+                tooltipText: "Show flat priority order and clear filters"
+                focusable: true
+                onClicked: {
+                    root.groupBySite = false;
+                    root.filterMode = "all";
+                    searchField.text = "";
+                    root.chooseSort("priority");
+                    root.rebuildVisibleRules();
+                }
+            }
+
             Item {
                 visible: !root.tracingUrl && (root.searchQuery.trim() !== "" || root.filterMode !== "all")
                 implicitWidth: countLabel.implicitWidth + Style.spacing.xs * 2
@@ -1505,32 +1522,6 @@ Item {
 
                     root.rebuildVisibleRules();
                 }
-            }
-
-        }
-
-        // Suggestions info header
-        RowLayout {
-            Layout.fillWidth: true
-            visible: root.activeTab === "suggestions"
-            spacing: Style.spacing.md
-
-            Text {
-                Layout.fillWidth: true
-                textFormat: Text.PlainText
-                text: root.browserTargets.length + " browser profiles · " + root.appTargets.length + " detected apps"
-                color: Util.alpha(root.foreground, 0.65)
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-            }
-
-            Text {
-                textFormat: Text.PlainText
-                text: "Edit inline, then Stage"
-                color: Util.alpha(root.foreground, 0.55)
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
             }
 
         }
@@ -1616,7 +1607,8 @@ Item {
                 model: visibleRulesModel
 
                 Controls.ScrollBar.vertical: Controls.ScrollBar {
-                    policy: Controls.ScrollBar.AsNeeded
+                    policy: rulesList.contentHeight > rulesList.height
+                        ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
                 }
 
                 delegate: Column {
@@ -1709,11 +1701,10 @@ Item {
                                 font.pixelSize: Style.font.caption
                             }
 
-                            Button {
+                            SelectionCheck {
                                 visible: root.selectingRules
-                                focusable: true
-                                text: root.visibleSiteUids(rowDelegate.siteName).every(uid => root.selectedRules[uid])
-                                    ? "Clear group" : "Select group"
+                                checked: root.visibleSiteUids(rowDelegate.siteName).every(uid => root.selectedRules[uid])
+                                Accessible.name: "Select group"
                                 onClicked: root.toggleSelection(root.visibleSiteUids(rowDelegate.siteName))
                             }
 
@@ -1749,11 +1740,10 @@ Item {
                             anchors.rightMargin: Style.spacing.xxs
                             spacing: Style.spacing.md
 
-                            Button {
+                            SelectionCheck {
                                 visible: root.selectingRules
-                                text: root.selectedRules[rowDelegate.uid] ? "☑" : "☐"
-                                tooltipText: "Select this rule for bulk changes"
-                                focusable: true
+                                checked: !!root.selectedRules[rowDelegate.uid]
+                                Accessible.name: "Select rule #" + (rowDelegate.actualIndex + 1)
                                 onClicked: root.toggleSelection([rowDelegate.uid])
                             }
 
@@ -1913,6 +1903,7 @@ Item {
 
                             // Delete rule button
                             PanelActionButton {
+                                visible: !root.selectingRules
                                 iconText: "\u00d7"
                                 size: Style.space(22)
                                 foreground: Util.alpha(root.foreground, 0.72)
@@ -1994,7 +1985,8 @@ Item {
                 model: suggestionsModel
 
                 Controls.ScrollBar.vertical: Controls.ScrollBar {
-                    policy: Controls.ScrollBar.AsNeeded
+                    policy: suggestionsList.contentHeight > suggestionsList.height
+                        ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
                 }
 
                 delegate: BorderSurface {
@@ -2065,33 +2057,36 @@ Item {
 
                         }
 
+                        TextField {
+                            id: suggPatternField
+
+                            property string syncedText: suggestionCard.pattern
+
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: Style.space(120)
+                            Layout.preferredHeight: Style.space(26)
+                            placeholderText: "Link pattern"
+                            foreground: root.foreground
+                            accent: root.accent
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.bodySmall
+                            horizontalPadding: Style.spacing.md
+                            verticalPadding: Style.spacing.xs
+                            onSyncedTextChanged: {
+                                if (!activeFocus && text !== syncedText)
+                                    text = syncedText;
+
+                            }
+                            Component.onCompleted: {
+                                text = suggestionCard.pattern;
+                                cursorPosition = 0;
+                            }
+                            onTextEdited: root.setSuggestionPattern(suggestionCard.suggestionKey, text)
+                        }
+
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: Style.spacing.md
-
-                            TextField {
-                                id: suggPatternField
-
-                                property string syncedText: suggestionCard.pattern
-
-                                Layout.fillWidth: true
-                                Layout.minimumWidth: Style.space(120)
-                                Layout.preferredHeight: Style.space(26)
-                                placeholderText: "Link pattern"
-                                foreground: root.foreground
-                                accent: root.accent
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.bodySmall
-                                horizontalPadding: Style.spacing.md
-                                verticalPadding: Style.spacing.xs
-                                onSyncedTextChanged: {
-                                    if (!activeFocus && text !== syncedText)
-                                        text = syncedText;
-
-                                }
-                                Component.onCompleted: text = suggestionCard.pattern
-                                onTextEdited: root.setSuggestionPattern(suggestionCard.suggestionKey, text)
-                            }
 
                             TargetPicker {
                                 Layout.preferredWidth: Style.space(156)
@@ -2107,6 +2102,7 @@ Item {
                             }
 
                             PrivateToggleButton {
+                                visible: !suggestionCard.isApp || suggestionCard.isPrivate
                                 active: suggestionCard.isPrivate
                                 invalid: suggestionCard.invalidPrivate
                                 enabled: !suggestionCard.isApp || suggestionCard.isPrivate
@@ -2123,7 +2119,7 @@ Item {
                                 enabled: suggestionCard.canStage
                                 opacity: enabled ? 1 : 0.5
                                 iconText: "󰄬"
-                                text: "Stage"
+                                text: "Add to rules"
                                 bordered: true
                                 selected: enabled
                                 focusable: true
@@ -2134,7 +2130,7 @@ Item {
                                 iconSize: Style.font.iconSmall
                                 horizontalPadding: Style.spacing.lg
                                 verticalPadding: Style.spacing.xs
-                                tooltipText: "Stage this rule into your Rules list (click Save to apply)"
+                                tooltipText: "Add this rule to the draft · save to apply"
                                 onClicked: root.stageSuggestion(suggestionCard.suggestionKey)
                             }
 
@@ -2160,11 +2156,6 @@ Item {
                 font.pixelSize: Style.font.body
             }
 
-        }
-
-        PanelSeparator {
-            Layout.fillWidth: true
-            foreground: root.foreground
         }
 
         // Settings
@@ -2211,21 +2202,48 @@ Item {
 
         }
 
+        PanelSectionHeader {
+            visible: root.activeTab === "settings"
+            Layout.fillWidth: true
+            text: "System and detection"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+        }
+
         RowLayout {
             visible: root.activeTab === "settings"
             Layout.fillWidth: true
             Button {
                 text: "Set as default link handler"
+                bordered: true
                 focusable: true
                 enabled: !root.busy
                 onClicked: root.setupRequested(false)
             }
             Button {
                 text: "Refresh launchers"
+                bordered: true
                 focusable: true
                 enabled: !root.busy
                 onClicked: root.setupRequested(true)
             }
+            Button {
+                text: "Rescan targets"
+                bordered: true
+                focusable: true
+                enabled: !root.busy
+                onClicked: root.requestRescan()
+            }
+
+        }
+
+        Text {
+            visible: root.activeTab === "settings"
+            textFormat: Text.PlainText
+            text: root.browserTargets.length + " browser profiles · " + root.appTargets.length + " detected apps"
+            color: Util.alpha(root.foreground, 0.65)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
         }
 
         Item {
@@ -2292,6 +2310,24 @@ Item {
 
         }
 
+    }
+
+    component SelectionCheck: Controls.CheckBox {
+        id: selection
+        padding: 0
+        indicator: BorderSurface {
+            implicitWidth: Style.space(15)
+            implicitHeight: Style.space(15)
+            color: selection.checked ? root.accent : "transparent"
+            borderSpec: Border.flat(root.accent, selection.activeFocus ? 2 : 1)
+            Text {
+                anchors.centerIn: parent
+                text: selection.checked ? "✓" : ""
+                textFormat: Text.PlainText
+                color: root.background
+                font.pixelSize: Style.font.caption
+            }
+        }
     }
 
     // Viewport-aware single-select target picker matching qs.Ui.Dropdown visuals

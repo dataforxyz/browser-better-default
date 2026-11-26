@@ -3,7 +3,6 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons as Commons
-import qs.Ui as Ui
 
 Item {
   id: root
@@ -12,7 +11,6 @@ Item {
   property bool opened: false
   property string statusKey: ""
   property string errorText: ""
-  readonly property bool setupVisible: editor.activeTab === "settings"
   property string pendingSort: ""
   property string pendingTrace: ""
   property string activeTrace: ""
@@ -188,27 +186,6 @@ Item {
       anchors.bottom: parent.bottom
       anchors.margins: Commons.Style.space(14)
       spacing: Commons.Style.space(8)
-
-      RowLayout {
-        Layout.fillWidth: true
-        Text {
-          Layout.fillWidth: true
-          text: strings.t(root.setupVisible ? "setup" : "rules")
-          textFormat: Text.PlainText
-          font.family: Commons.Style.font.family
-          font.pixelSize: Commons.Style.font.body + 3
-          font.bold: true
-          color: Commons.Color.foreground
-        }
-        Ui.Button {
-          text: strings.t(root.setupVisible ? "rules" : "setup")
-          focusable: true
-          onClicked: {
-            root.statusKey = ""
-            editor.activeTab = root.setupVisible ? "rules" : "settings"
-          }
-        }
-      }
 
       RulesEditor {
         id: editor
