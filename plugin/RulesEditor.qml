@@ -2598,6 +2598,8 @@ Item {
 
                     Controls.ScrollBar.vertical: Controls.ScrollBar {
                         id: optionScrollBar
+                        anchors.right: optionList.right
+                        z: 1
                         policy: optionList.contentHeight > optionList.height
                             ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
                         width: Style.space(9)
