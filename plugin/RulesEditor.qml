@@ -32,6 +32,8 @@ Item {
     property string activeTab: "rules"
     // "rules" | "suggestions"
     property string searchQuery: ""
+    property string suggestionSearch: ""
+    property string editingSuggestionKey: ""
     readonly property bool tracingUrl: /^(https?:\/\/\S+|mailto:\S+)$/i.test(searchQuery.trim())
     readonly property string traceRequest: tracingUrl
         ? JSON.stringify(Object.assign(buildSavePayload(draftRules, draftFallback), { url: searchQuery.trim() }))
@@ -683,7 +685,11 @@ Item {
                 "isPrivate": effPrivate
             });
         }
-        reconcileSuggestionsModel(desired);
+        const query = suggestionSearch.trim().toLowerCase();
+        reconcileSuggestionsModel(query ? desired.filter(item =>
+            [item.title, item.pattern, item.label, item.reason].some(value => value.toLowerCase().includes(query)))
+            : desired);
+
     }
 
     function reconcileSuggestionsModel(desired) {
@@ -1607,6 +1613,17 @@ Item {
 
         }
 
+        TextField {
+            visible: root.activeTab === "suggestions"
+            Layout.fillWidth: true
+            placeholderText: "Search suggestions…"
+            text: root.suggestionSearch
+            onTextEdited: {
+                root.suggestionSearch = text;
+                root.rebuildSuggestions();
+            }
+        }
+
         PanelSeparator {
             Layout.fillWidth: true
             foreground: root.foreground
@@ -2071,13 +2088,38 @@ Item {
                 anchors.fill: parent
                 visible: root.activeTab === "suggestions"
                 clip: true
-                spacing: Style.spacing.lg
+                reuseItems: true
                 boundsBehavior: Flickable.StopAtBounds
                 model: suggestionsModel
 
+                WheelHandler {
+                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                    onWheel: event => {
+                        if (suggestionsList.contentHeight <= suggestionsList.height)
+                            return;
+                        const delta = event.pixelDelta.y || event.angleDelta.y / 120 * Style.space(108);
+                        if (!delta)
+                            return;
+                        suggestionsList.cancelFlick();
+                        const top = suggestionsList.originY;
+                        const bottom = top + suggestionsList.contentHeight - suggestionsList.height;
+                        suggestionsList.contentY = Math.max(top, Math.min(bottom, suggestionsList.contentY - delta));
+                        event.accepted = true;
+                    }
+                }
+
                 Controls.ScrollBar.vertical: Controls.ScrollBar {
+                    id: suggestionScrollBar
+                    anchors.right: suggestionsList.right
+                    z: 1
                     policy: suggestionsList.contentHeight > suggestionsList.height
                         ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
+                    width: Style.space(9)
+                    padding: Style.space(2)
+                    contentItem: Rectangle {
+                        radius: width / 2
+                        color: Util.alpha(root.foreground, suggestionScrollBar.pressed ? 0.8 : 0.48)
+                    }
                 }
 
                 delegate: BorderSurface {
@@ -2097,34 +2139,23 @@ Item {
                     readonly property bool canStage: pattern.trim() !== "" && patternError === "" && label.trim() !== "" && label !== root.noneFoundLabel && !invalidPrivate
                     readonly property string warningText: patternError !== "" ? patternError : (invalidPrivate ? ("'" + label + "' is a local app and cannot open private windows — pick a browser or turn off Private.") : (targetMissing ? ("Target '" + label + "' not found — pick another or Rescan.") : ""))
 
-                    width: suggestionsList.width
-                    implicitHeight: cardColumn.implicitHeight + Style.spacing.lg * 2
-                    radius: Style.cornerRadius
-                    color: Style.normalFillFor(root.foreground, root.accent)
-                    borderSpec: Border.flat(Util.alpha(root.foreground, 0.16), 1)
-
-                    Connections {
-                        function onDraftSynced() {
-                            if (suggPatternField.text !== suggestionCard.pattern)
-                                suggPatternField.text = suggestionCard.pattern;
-
-                        }
-
-                        target: root
-                    }
+                    readonly property bool editing: root.editingSuggestionKey === suggestionKey
+                    width: suggestionsList.width - (suggestionScrollBar.visible ? suggestionScrollBar.width : 0)
+                    implicitHeight: cardColumn.implicitHeight + Style.spacing.xs * 2
+                    color: editing ? Style.normalFillFor(root.foreground, root.accent) : "transparent"
 
                     ColumnLayout {
                         id: cardColumn
-
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.top: parent.top
-                        anchors.margins: Style.spacing.lg
-                        spacing: Style.spacing.md
+                        anchors.margins: Style.spacing.xs
+                        spacing: Style.spacing.xs
 
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: Style.spacing.md
+                            visible: !suggestionCard.editing
+                            spacing: Style.spacing.sm
 
                             Text {
                                 Layout.fillWidth: true
@@ -2132,100 +2163,143 @@ Item {
                                 text: suggestionCard.title
                                 color: root.foreground
                                 font.family: root.fontFamily
-                                font.pixelSize: Style.font.body
-                                font.bold: true
+                                font.pixelSize: Style.font.bodySmall
                                 elide: Text.ElideRight
                             }
 
                             Text {
-                                visible: suggestionCard.reason !== ""
+                                Layout.preferredWidth: Style.space(155)
+                                Layout.minimumWidth: Style.space(88)
+                                textFormat: Text.PlainText
+                                text: suggestionCard.label + (suggestionCard.isPrivate ? " · Private" : "")
+                                color: Util.alpha(root.foreground, 0.8)
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                visible: suggestionsList.width >= Style.space(510)
+                                Layout.preferredWidth: Style.space(96)
                                 textFormat: Text.PlainText
                                 text: suggestionCard.reason
-                                color: Util.alpha(root.foreground, 0.6)
+                                color: Util.alpha(root.foreground, 0.65)
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
-                            }
-
-                        }
-
-                        TextField {
-                            id: suggPatternField
-
-                            property string syncedText: suggestionCard.pattern
-
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: Style.space(120)
-                            Layout.preferredHeight: Style.space(26)
-                            placeholderText: "Link pattern"
-                            foreground: root.foreground
-                            accent: root.accent
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.bodySmall
-                            horizontalPadding: Style.spacing.md
-                            verticalPadding: Style.spacing.xs
-                            onSyncedTextChanged: {
-                                if (!activeFocus && text !== syncedText)
-                                    text = syncedText;
-
-                            }
-                            Component.onCompleted: {
-                                text = suggestionCard.pattern;
-                                cursorPosition = 0;
-                            }
-                            onTextEdited: root.setSuggestionPattern(suggestionCard.suggestionKey, text)
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Style.spacing.md
-
-                            TargetPicker {
-                                Layout.preferredWidth: Style.space(156)
-                                Layout.minimumWidth: Style.space(104)
-                                subtle: false
-                                warning: suggestionCard.targetMissing
-                                value: suggestionCard.label
-                                options: root.ruleTargetOptions(suggestionCard.label)
-                                placeholderText: root.noneFoundLabel
-                                onPicked: function(val) {
-                                    root.setSuggestionLabel(suggestionCard.suggestionKey, val);
-                                }
-                            }
-
-                            PrivateToggleButton {
-                                visible: !suggestionCard.isApp || suggestionCard.isPrivate
-                                active: suggestionCard.isPrivate
-                                invalid: suggestionCard.invalidPrivate
-                                enabled: !suggestionCard.isApp || suggestionCard.isPrivate
-                                tooltipText: suggestionCard.invalidPrivate ? suggestionCard.warningText : (suggestionCard.isApp ? "Private windows apply to browsers only" : (suggestionCard.isPrivate ? "Private window enabled — click to turn off" : "Open matching links in a private window"))
-                                onToggled: root.setSuggestionPrivate(suggestionCard.suggestionKey, !suggestionCard.isPrivate)
-                            }
-
-                            WarningBadge {
-                                visible: suggestionCard.hasWarning
-                                tooltipText: suggestionCard.warningText
+                                elide: Text.ElideRight
                             }
 
                             Button {
-                                enabled: suggestionCard.canStage
-                                opacity: enabled ? 1 : 0.5
-                                iconText: "󰄬"
-                                text: "Add to rules"
-                                bordered: true
-                                selected: enabled
+                                text: "Edit"
                                 focusable: true
-                                foreground: root.foreground
-                                accent: root.accent
-                                fontFamily: root.fontFamily
-                                fontSize: Style.font.bodySmall
-                                iconSize: Style.font.iconSmall
-                                horizontalPadding: Style.spacing.lg
-                                verticalPadding: Style.spacing.xs
-                                tooltipText: "Add this rule to the draft · save to apply"
-                                onClicked: root.stageSuggestion(suggestionCard.suggestionKey)
+                                tooltipText: "Edit suggestion"
+                                onClicked: root.editingSuggestionKey = suggestionCard.suggestionKey
                             }
 
+                            Button {
+                                text: "Add"
+                                enabled: suggestionCard.canStage
+                                focusable: true
+                                tooltipText: "Add to rules"
+                                onClicked: root.stageSuggestion(suggestionCard.suggestionKey)
+                            }
                         }
+
+                        Loader {
+                            active: suggestionCard.editing
+                            visible: active
+                            Layout.fillWidth: true
+                            sourceComponent: ColumnLayout {
+                                spacing: Style.spacing.xs
+
+                                TextField {
+                                    id: suggPatternField
+
+                                    property string syncedText: suggestionCard.pattern
+
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: Style.space(120)
+                                    Layout.preferredHeight: Style.space(26)
+                                    placeholderText: "Link pattern"
+                                    foreground: root.foreground
+                                    accent: root.accent
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.bodySmall
+                                    horizontalPadding: Style.spacing.md
+                                    verticalPadding: Style.spacing.xs
+                                    onSyncedTextChanged: {
+                                        if (!activeFocus && text !== syncedText)
+                                            text = syncedText;
+
+                                    }
+                                    Component.onCompleted: {
+                                        text = suggestionCard.pattern;
+                                        cursorPosition = 0;
+                                    }
+                                    onTextEdited: root.setSuggestionPattern(suggestionCard.suggestionKey, text)
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Style.spacing.md
+
+                                    TargetPicker {
+                                        Layout.preferredWidth: Style.space(156)
+                                        Layout.minimumWidth: Style.space(104)
+                                        subtle: false
+                                        warning: suggestionCard.targetMissing
+                                        value: suggestionCard.label
+                                        options: root.ruleTargetOptions(suggestionCard.label)
+                                        placeholderText: root.noneFoundLabel
+                                        onPicked: function(val) {
+                                            root.setSuggestionLabel(suggestionCard.suggestionKey, val);
+                                        }
+                                    }
+
+                                    PrivateToggleButton {
+                                        visible: !suggestionCard.isApp || suggestionCard.isPrivate
+                                        active: suggestionCard.isPrivate
+                                        invalid: suggestionCard.invalidPrivate
+                                        enabled: !suggestionCard.isApp || suggestionCard.isPrivate
+                                        tooltipText: suggestionCard.invalidPrivate ? suggestionCard.warningText : (suggestionCard.isApp ? "Private windows apply to browsers only" : (suggestionCard.isPrivate ? "Private window enabled — click to turn off" : "Open matching links in a private window"))
+                                        onToggled: root.setSuggestionPrivate(suggestionCard.suggestionKey, !suggestionCard.isPrivate)
+                                    }
+
+                                    WarningBadge {
+                                        visible: suggestionCard.hasWarning
+                                        tooltipText: suggestionCard.warningText
+                                    }
+
+                                    Button {
+                                        text: "Done"
+                                        focusable: true
+                                        onClicked: root.editingSuggestionKey = ""
+                                    }
+
+                                    Button {
+                                        enabled: suggestionCard.canStage
+                                        opacity: enabled ? 1 : 0.5
+                                        iconText: "󰄬"
+                                        text: "Add to rules"
+                                        bordered: true
+                                        selected: enabled
+                                        focusable: true
+                                        foreground: root.foreground
+                                        accent: root.accent
+                                        fontFamily: root.fontFamily
+                                        fontSize: Style.font.bodySmall
+                                        iconSize: Style.font.iconSmall
+                                        horizontalPadding: Style.spacing.lg
+                                        verticalPadding: Style.spacing.xs
+                                        tooltipText: "Add this rule to the draft · save to apply"
+                                        onClicked: root.stageSuggestion(suggestionCard.suggestionKey)
+                                    }
+
+                                }
+
+                            }
+                        }
+                        PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
 
                     }
 
@@ -2241,7 +2315,7 @@ Item {
                 textFormat: Text.PlainText
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: "No new suggestions. They appear when a supported local app is detected or when you repeatedly choose the same target for similar links."
+                text: root.suggestionSearch.trim() ? "No suggestions match your search." : "No new suggestions yet."
                 color: Util.alpha(root.foreground, 0.65)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
