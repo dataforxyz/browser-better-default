@@ -41,6 +41,7 @@ Item {
     property var expandedSites: ({})
     property bool selectingRules: false
     property var selectedRules: ({})
+    property var pendingRemoval: []
     readonly property int selectedRuleCount: draftRules.filter(rule => selectedRules[rule.uid]).length
     readonly property bool canReorder: !groupBySite && sortMode === "priority" && filterMode === "all" && searchQuery.trim() === ""
     // Draft and document state
@@ -175,10 +176,8 @@ Item {
             statusIsWarning = true;
             return;
         }
-        draftRules = action === "remove"
-            ? draftRules.filter(rule => !selectedRules[rule.uid])
-            : draftRules.map(rule => !selectedRules[rule.uid] ? rule : Object.assign({}, rule,
-                action === "target" ? { label: value } : { enabled: value }));
+        draftRules = draftRules.map(rule => !selectedRules[rule.uid] ? rule : Object.assign({}, rule,
+            action === "target" ? { label: value } : { enabled: value }));
         selectedRules = {};
         selectingRules = false;
         recomputeDirty();
@@ -849,14 +848,36 @@ Item {
         scrollToRuleUid(uid);
     }
 
-    function removeRule(uid) {
-        var idx = findRuleIndexByUid(uid);
-        if (idx < 0)
-            return ;
+    function selectedRuleUids() {
+        return draftRules.filter(rule => selectedRules[rule.uid]).map(rule => rule.uid);
+    }
 
-        var next = draftRules.slice();
-        next.splice(idx, 1);
-        draftRules = next;
+    function requestRemoval(uids, skipConfirmation) {
+        if (busy || pendingRemoval.length || !uids.length)
+            return;
+        if (skipConfirmation) {
+            removeRules(uids);
+            return;
+        }
+        pendingRemoval = uids.slice();
+        confirmRemove.selectedIndex = 0;
+        removalOverlay.forceActiveFocus();
+    }
+
+    function finishRemoval(confirmed) {
+        const uids = pendingRemoval;
+        pendingRemoval = [];
+        if (confirmed)
+            removeRules(uids);
+        focusEditor();
+    }
+
+    function removeRules(uids) {
+        if (busy)
+            return;
+        draftRules = draftRules.filter(rule => !uids.includes(rule.uid));
+        selectedRules = {};
+        selectingRules = false;
         recomputeDirty();
         rebuildVisibleRules();
         rebuildSuggestions();
@@ -1256,7 +1277,17 @@ Item {
                     foreground: modelData === "Remove" ? root.urgent : root.foreground
                     focusable: true
                     enabled: !root.busy
-                    onClicked: root.applyBulk(modelData === "Remove" ? "remove" : "enable", modelData === "Enable")
+                    tooltipText: modelData === "Remove" ? "Remove selected rules · Shift-click to skip confirmation" : ""
+                    onClicked: {
+                        if (modelData === "Remove")
+                            root.requestRemoval(root.selectedRuleUids(), false);
+                        else
+                            root.applyBulk("enable", modelData === "Enable");
+                    }
+                    ShiftRemoveClick {
+                        enabled: modelData === "Remove" && !root.busy
+                        onShiftClicked: root.requestRemoval(root.selectedRuleUids(), true)
+                    }
                 }
             }
         }
@@ -1904,14 +1935,20 @@ Item {
                             // Delete rule button
                             PanelActionButton {
                                 visible: !root.selectingRules
+                                enabled: !root.busy
+                                focusable: true
                                 iconText: "\u00d7"
                                 size: Style.space(22)
                                 foreground: Util.alpha(root.foreground, 0.72)
                                 hoverColor: root.urgent
                                 fontFamily: root.fontFamily
                                 fontSize: Style.font.body
-                                tooltipText: "Delete rule"
-                                onClicked: root.removeRule(rowDelegate.uid)
+                                tooltipText: "Remove rule · Shift-click to skip confirmation"
+                                onClicked: root.requestRemoval([rowDelegate.uid], false)
+                                ShiftRemoveClick {
+                                    enabled: !root.busy
+                                    onShiftClicked: root.requestRemoval([rowDelegate.uid], true)
+                                }
                             }
 
                         }
@@ -2310,6 +2347,38 @@ Item {
 
         }
 
+    }
+
+    FocusScope {
+        id: removalOverlay
+        anchors.fill: parent
+        z: 20
+        visible: root.pendingRemoval.length > 0
+        Keys.priority: Keys.BeforeItem
+        Keys.onPressed: event => {
+            confirmRemove.handleKey(event);
+            event.accepted = true;
+        }
+        ConfirmDialog {
+            id: confirmRemove
+            anchors.fill: parent
+            opened: removalOverlay.visible
+            message: root.pendingRemoval.length === 1
+                ? "Remove this rule?" : "Remove " + root.pendingRemoval.length + " selected rules?"
+            confirmText: "Remove"
+            onCanceled: root.finishRemoval(false)
+            onConfirmed: root.finishRemoval(true)
+        }
+    }
+
+    component ShiftRemoveClick: MouseArea {
+        anchors.fill: parent
+        z: 1
+        signal shiftClicked()
+        onPressed: mouse => {
+            mouse.accepted = !!(mouse.modifiers & Qt.ShiftModifier);
+        }
+        onClicked: shiftClicked()
     }
 
     component SelectionCheck: Controls.CheckBox {
