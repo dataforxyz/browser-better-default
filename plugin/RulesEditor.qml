@@ -46,6 +46,7 @@ Item {
     property var expandedSites: ({})
     property bool selectingRules: false
     property var selectedRules: ({})
+    property int selectionAnchor: -1
     property var pendingRemoval: []
     property int dragRuleUid: -1
     property int dragTarget: -1
@@ -203,17 +204,56 @@ Item {
         return uids;
     }
 
+    function selectWithModifier(uid, modifiers) {
+        const shown = [];
+        for (let i = 0; i < visibleRulesModel.count; i++) {
+            const row = visibleRulesModel.get(i);
+            if (row.groupCount < 2 || searchQuery.trim() || filterMode !== "all" || expandedSites[row.siteName])
+                shown.push(row.uid);
+        }
+        const anchor = shown.indexOf(selectionAnchor);
+        const clicked = shown.indexOf(uid);
+        if (clicked < 0)
+            return;
+        if (modifiers & Qt.ShiftModifier) {
+            const first = anchor < 0 ? clicked : anchor;
+            const next = modifiers & Qt.ControlModifier ? Object.assign({}, selectedRules) : {};
+            for (let i = Math.min(first, clicked); i <= Math.max(first, clicked); i++)
+                next[shown[i]] = true;
+            selectedRules = next;
+            if (anchor < 0)
+                selectionAnchor = uid;
+        } else {
+            const next = Object.assign({}, selectedRules);
+            if (!selectingRules && anchor >= 0 && shown[anchor] !== uid)
+                next[shown[anchor]] = true;
+            if (next[uid])
+                delete next[uid];
+            else
+                next[uid] = true;
+            selectedRules = next;
+            selectionAnchor = uid;
+        }
+        selectingRules = true;
+    }
+
     function applyBulk(action, value) {
         if (busy || selectedRuleCount === 0)
             return;
-        if (action === "target" && isAppTarget(value)
-                && draftRules.some(rule => selectedRules[rule.uid] && rule.isPrivate)) {
+        const invalidTarget = action === "target" && isAppTarget(value)
+            && draftRules.some(rule => selectedRules[rule.uid] && rule.isPrivate);
+        const invalidPrivate = action === "private" && value
+            && draftRules.some(rule => selectedRules[rule.uid] && isAppTarget(rule.label));
+        if (invalidTarget || invalidPrivate) {
             statusMessage = "Private rules need a browser target.";
             statusIsWarning = true;
             return;
         }
         draftRules = draftRules.map(rule => !selectedRules[rule.uid] ? rule : Object.assign({}, rule,
-            action === "target" ? { label: value } : { enabled: value }));
+            action === "target" ? { label: value }
+                : action === "private" ? { isPrivate: value } : { enabled: value }));
+        statusMessage = "";
+        statusIsWarning = false;
         selectedRules = {};
         selectingRules = false;
         recomputeDirty();
@@ -1360,25 +1400,33 @@ Item {
                 options: root.ruleTargetOptions("")
                 onPicked: value => root.applyBulk("target", value)
             }
-            Repeater {
-                model: root.selectedRuleCount > 0 && root.selectingRules ? ["Enable", "Disable", "Remove"] : []
-                Button {
-                    required property string modelData
-                    text: modelData
-                    foreground: modelData === "Remove" ? root.urgent : root.foreground
-                    focusable: true
+            TargetPicker {
+                visible: root.selectedRuleCount > 0
+                enabled: !root.busy
+                Layout.preferredWidth: Style.space(110)
+                placeholderText: "Actions"
+                options: [
+                    { value: "enable", label: "Enable" },
+                    { value: "disable", label: "Disable" },
+                    { value: "private", label: "Make private" },
+                    { value: "normal", label: "Make normal" }
+                ]
+                onPicked: value => {
+                    const privacy = value === "private" || value === "normal";
+                    root.applyBulk(privacy ? "private" : "enable", value === "private" || value === "enable");
+                }
+            }
+            Button {
+                visible: root.selectedRuleCount > 0
+                text: "Remove"
+                foreground: root.urgent
+                focusable: true
+                enabled: !root.busy
+                tooltipText: "Remove selected rules · Shift-click to skip confirmation"
+                onClicked: root.requestRemoval(root.selectedRuleUids(), false)
+                ShiftRemoveClick {
                     enabled: !root.busy
-                    tooltipText: modelData === "Remove" ? "Remove selected rules · Shift-click to skip confirmation" : ""
-                    onClicked: {
-                        if (modelData === "Remove")
-                            root.requestRemoval(root.selectedRuleUids(), false);
-                        else
-                            root.applyBulk("enable", modelData === "Enable");
-                    }
-                    ShiftRemoveClick {
-                        enabled: modelData === "Remove" && !root.busy
-                        onShiftClicked: root.requestRemoval(root.selectedRuleUids(), true)
-                    }
+                    onShiftClicked: root.requestRemoval(root.selectedRuleUids(), true)
                 }
             }
         }
@@ -1821,9 +1869,17 @@ Item {
 
                             anchors.left: parent.left
                             anchors.right: parent.right
+                            anchors.leftMargin: Style.spacing.xxs
                             anchors.bottom: parent.bottom
                             anchors.bottomMargin: Style.spacing.xxs
                             spacing: Style.spacing.md
+
+                            SelectionCheck {
+                                visible: root.selectingRules
+                                checked: root.visibleSiteUids(rowDelegate.siteName).every(uid => root.selectedRules[uid])
+                                Accessible.name: "Select group"
+                                onClicked: root.toggleSelection(root.visibleSiteUids(rowDelegate.siteName))
+                            }
 
                             Button {
                                 Layout.fillWidth: true
@@ -1844,12 +1900,7 @@ Item {
                                 font.pixelSize: Style.font.caption
                             }
 
-                            SelectionCheck {
-                                visible: root.selectingRules
-                                checked: root.visibleSiteUids(rowDelegate.siteName).every(uid => root.selectedRules[uid])
-                                Accessible.name: "Select group"
-                                onClicked: root.toggleSelection(root.visibleSiteUids(rowDelegate.siteName))
-                            }
+
 
                         }
 
@@ -1862,7 +1913,9 @@ Item {
                         width: parent.width
                         visible: rowDelegate.groupOpen
                         height: visible ? Style.space(34) : 0
-                        color: Util.alpha(root.foreground, rowHover.hovered ? 0.07 : (rowDelegate.groupCount > 1 ? 0.035 : 0))
+                        color: root.selectingRules && root.selectedRules[rowDelegate.uid]
+                            ? Util.alpha(root.accent, 0.13)
+                            : Util.alpha(root.foreground, rowHover.hovered ? 0.07 : (rowDelegate.groupCount > 1 ? 0.035 : 0))
 
                         Rectangle {
                             visible: rowDelegate.groupCount > 1
@@ -1871,6 +1924,25 @@ Item {
                             anchors.bottom: parent.bottom
                             width: Style.space(2)
                             color: Util.alpha(root.accent, 0.62)
+                        }
+
+                        MouseArea {
+                            id: selectionMouse
+                            anchors.fill: parent
+                            z: 3
+                            onPressed: mouse => {
+                                const shiftRemove = (mouse.modifiers & Qt.ShiftModifier)
+                                    && !(mouse.modifiers & Qt.ControlModifier) && removeRuleButton.visible
+                                    && removeRuleButton.contains(removeRuleButton.mapFromItem(selectionMouse, mouse.x, mouse.y));
+                                if (shiftRemove) {
+                                    mouse.accepted = false;
+                                    return;
+                                }
+                                mouse.accepted = !!(mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier));
+                                if (!mouse.accepted)
+                                    root.selectionAnchor = rowDelegate.uid;
+                            }
+                            onClicked: mouse => root.selectWithModifier(rowDelegate.uid, mouse.modifiers)
                         }
 
                         HoverHandler {
@@ -1899,7 +1971,10 @@ Item {
                                 visible: root.selectingRules
                                 checked: !!root.selectedRules[rowDelegate.uid]
                                 Accessible.name: "Select rule #" + (rowDelegate.actualIndex + 1)
-                                onClicked: root.toggleSelection([rowDelegate.uid])
+                                onClicked: {
+                                    root.selectionAnchor = rowDelegate.uid;
+                                    root.toggleSelection([rowDelegate.uid]);
+                                }
                             }
 
                             // Actual priority badge (#1 matches first)
@@ -2121,6 +2196,7 @@ Item {
 
                             // Delete rule button
                             PanelActionButton {
+                                id: removeRuleButton
                                 visible: !root.selectingRules
                                 enabled: !root.busy
                                 focusable: true
