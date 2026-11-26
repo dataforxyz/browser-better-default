@@ -349,6 +349,15 @@ class EditorDataTest(unittest.TestCase):
                 },
             ]
         }
+        _make_executable(os.path.join(self.fake_bin, "omarchy-launch-webapp"))
+        with open(os.path.join(self.xdg_data, "applications", "Notes.desktop"), "w", encoding="utf-8") as f:
+            f.write("[Desktop Entry]\nType=Application\nName=Notes\n"
+                    "Exec=omarchy-launch-webapp https://notes.example.com/\n")
+        history["events"].extend(
+            {"url": f"https://notes.example.com/docs/{i}", "host": "notes.example.com",
+             "segs": ["docs", str(i)], "label": "Notes — Web App", "ts": 20 + i}
+            for i in range(2)
+        )
         self._write_conf("history.json", json.dumps(history))
         # Disabled rule for docs.example.com/private should still allow suggestion
         self._write_conf(
@@ -368,6 +377,8 @@ class EditorDataTest(unittest.TestCase):
         self.assertEqual(len(zoom_sugs), 1)
         self.assertEqual(zoom_sugs[0]["title"], "Zoom meetings")
         self.assertEqual(zoom_sugs[0]["reason"], "Detected app")
+        self.assertEqual((zoom_sugs[0]["kind"], zoom_sugs[0]["uses"], zoom_sugs[0]["last_used"]),
+                         ("desktop", 2, 8))
         self.assertFalse(zoom_sugs[0]["private"])
 
         # Learned private browser habit
@@ -376,9 +387,13 @@ class EditorDataTest(unittest.TestCase):
             by_key[("docs.example.com/private", "Chromium — Work", True)]["reason"],
             "Chosen 2 times",
         )
+        browser = by_key[("docs.example.com/private", "Chromium — Work", True)]
+        self.assertEqual((browser["kind"], browser["uses"], browser["last_used"]), ("browser", 2, 2))
 
         # Learned non-private T3 Code habit
         self.assertIn(("app.t3.codes/threads/ws1", "T3 Code", False), by_key)
+        webapp = by_key[("notes.example.com/docs", "Notes — Web App", False)]
+        self.assertEqual((webapp["kind"], webapp["uses"], webapp["last_used"]), ("webapp", 2, 21))
 
         # Private local-app habit and unknown app habit excluded
         self.assertNotIn(("app.t3.codes/new", "T3 Code", True), by_key)

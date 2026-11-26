@@ -34,6 +34,8 @@ Item {
     // "rules" | "suggestions"
     property string searchQuery: ""
     property string suggestionSearch: ""
+    property string suggestionSort: "recommended"
+    property string suggestionKind: "all"
     property string editingSuggestionKey: ""
     readonly property bool tracingUrl: /^(https?:\/\/\S+|mailto:\S+)$/i.test(searchQuery.trim())
     readonly property string traceRequest: tracingUrl
@@ -726,13 +728,22 @@ Item {
                 "reason": reason,
                 "pattern": effPattern,
                 "label": effLabel,
-                "isPrivate": effPrivate
+                "isPrivate": effPrivate,
+                "kind": raw.kind || (root.isAppTarget(origLabel) ? "desktop" : "browser"),
+                "uses": Number(raw.uses) || 0,
+                "lastUsed": Number(raw.last_used) || 0
             });
         }
         const query = suggestionSearch.trim().toLowerCase();
-        reconcileSuggestionsModel(query ? desired.filter(item =>
-            [item.title, item.pattern, item.label, item.reason].some(value => value.toLowerCase().includes(query)))
-            : desired);
+        const shown = desired.filter(item =>
+            (suggestionKind === "all" || item.kind === suggestionKind)
+            && (!query || [item.title, item.pattern, item.label, item.reason]
+                .some(value => value.toLowerCase().includes(query))));
+        if (suggestionSort === "used")
+            shown.sort((a, b) => b.uses - a.uses || b.lastUsed - a.lastUsed);
+        else if (suggestionSort === "recent")
+            shown.sort((a, b) => b.lastUsed - a.lastUsed || b.uses - a.uses);
+        reconcileSuggestionsModel(shown);
 
     }
 
@@ -1697,14 +1708,55 @@ Item {
 
         }
 
-        TextField {
+        RowLayout {
             visible: root.activeTab === "suggestions"
             Layout.fillWidth: true
-            placeholderText: "Search suggestions…"
-            text: root.suggestionSearch
-            onTextEdited: {
-                root.suggestionSearch = text;
-                root.rebuildSuggestions();
+            spacing: Style.spacing.sm
+
+            TextField {
+                id: suggestionSearchField
+                Layout.fillWidth: true
+                Layout.minimumWidth: Style.space(90)
+                placeholderText: "Search suggestions…"
+                text: root.suggestionSearch
+                onTextEdited: {
+                    root.suggestionSearch = text;
+                    root.rebuildSuggestions();
+                    suggestionsList.positionViewAtBeginning();
+                }
+            }
+            Dropdown {
+                Layout.preferredWidth: Style.space(132)
+                showLabel: false
+                rowHeight: suggestionSearchField.implicitHeight
+                value: root.suggestionSort
+                options: [
+                    { value: "recommended", label: "Recommended" },
+                    { value: "used", label: "Most used" },
+                    { value: "recent", label: "Most recent" }
+                ]
+                onChanged: order => {
+                    root.suggestionSort = order;
+                    root.rebuildSuggestions();
+                    suggestionsList.positionViewAtBeginning();
+                }
+            }
+            Dropdown {
+                Layout.preferredWidth: Style.space(132)
+                showLabel: false
+                rowHeight: suggestionSearchField.implicitHeight
+                value: root.suggestionKind
+                options: [
+                    { value: "all", label: "All targets" },
+                    { value: "webapp", label: "Web apps" },
+                    { value: "desktop", label: "Desktop apps" },
+                    { value: "browser", label: "Browser profiles" }
+                ]
+                onChanged: kind => {
+                    root.suggestionKind = kind;
+                    root.rebuildSuggestions();
+                    suggestionsList.positionViewAtBeginning();
+                }
             }
         }
 
@@ -2511,7 +2563,8 @@ Item {
                 textFormat: Text.PlainText
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: root.suggestionSearch.trim() ? "No suggestions match your search." : "No new suggestions yet."
+                text: root.suggestionSearch.trim() || root.suggestionKind !== "all"
+                    ? "No suggestions match these filters." : "No new suggestions yet."
                 color: Util.alpha(root.foreground, 0.65)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body

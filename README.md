@@ -47,7 +47,8 @@ and remembers the decisions you want to make permanent.
 - **Default for unmatched links** — optionally route everything that matches no rule to a
   chosen profile (a catch-all), instead of always showing the menu.
 - **Omarchy rules editor** — review suggestions from detected apps and repeated
-  picks, then edit and save the rules you want. For example, a detected Zoom client can
+  picks. Sort by use or recency, filter by target type, and add the rules you want.
+  For example, a detected Zoom client can
   handle meeting links across regional Zoom hosts. Edit, enable, or reorder rules,
   choose a fallback for unmatched links, and find rules that reference missing profiles.
   Completed rule edits autosave by default. Turn **Autosave** off in **Settings**
