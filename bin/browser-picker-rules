@@ -17,16 +17,14 @@ HOME = os.path.expanduser("~")
 ASK = "Always ask (show the menu)"
 NONE_FOUND = "(no browsers found)"
 _APPS_MOD = None
+_RECOMMEND_MOD = None
 
 
-def _apps_module():
-    """Import sibling browser-picker-apps (or the one on PATH) lazily."""
-    global _APPS_MOD
-    if _APPS_MOD is not None:
-        return _APPS_MOD
+def _load_helper(name):
+    """Import the matching helper from this checkout, or find it on PATH."""
     cands = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser-picker-apps"),
-        shutil.which("browser-picker-apps"),
+        os.path.join(os.path.dirname(os.path.realpath(__file__)), name),
+        shutil.which(name),
     ]
     for path in cands:
         if not path or not os.path.isfile(path):
@@ -34,17 +32,30 @@ def _apps_module():
         prev_no_bytecode = sys.dont_write_bytecode
         try:
             sys.dont_write_bytecode = True
-            loader = importlib.machinery.SourceFileLoader("browser_picker_apps", path)
-            spec = importlib.util.spec_from_loader("browser_picker_apps", loader)
+            loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), path)
+            spec = importlib.util.spec_from_loader(loader.name, loader)
             mod = importlib.util.module_from_spec(spec)
             loader.exec_module(mod)
-            _APPS_MOD = mod
             return mod
         except Exception:
             continue
         finally:
             sys.dont_write_bytecode = prev_no_bytecode
     return None
+
+
+def _apps_module():
+    global _APPS_MOD
+    if _APPS_MOD is None:
+        _APPS_MOD = _load_helper("browser-picker-apps")
+    return _APPS_MOD
+
+
+def _recommend_module():
+    global _RECOMMEND_MOD
+    if _RECOMMEND_MOD is None:
+        _RECOMMEND_MOD = _load_helper("browser-picker-recommend")
+    return _RECOMMEND_MOD
 
 
 def read_lines(path):
@@ -122,6 +133,27 @@ def load_rules():
             priv = len(parts) > 3 and parts[3] == "1"  # optional 4th field: private window
             rules.append((en == "1", pat, lbl, priv))
     return rules
+
+
+def recommended_defaults(browsers, apps, registry):
+    app_defaults = list(apps.suggested_app_defaults(registry)) if apps else []
+    scoped_apps = {label for _pattern, label, _title in app_defaults if label not in browsers}
+    for pattern, label, title in app_defaults:
+        if label in scoped_apps:
+            yield pattern, label, False, title, "Detected app"
+
+    recommender = _recommend_module()
+    if not recommender:
+        return
+    for pattern, label, private, count, url in recommender.learned_defaults(
+        recommender.load_store()["events"], recommender.threshold()
+    ):
+        if label not in browsers:
+            if label in scoped_apps or private or not apps or not url:
+                continue
+            if not any(match["label"] == label for match in apps.match_url(url, registry)):
+                continue
+        yield pattern, label, private, pattern, f"Chosen {count} times"
 
 
 def parse_args(argv):
@@ -235,7 +267,10 @@ class RulesApp(Gtk.Application):
     def _reload_targets(self):
         self.browser_labels = load_browser_labels()
         browser_set = set(self.browser_labels)
-        app_list = [a for a in load_app_labels() if a not in browser_set]
+        self.apps = _apps_module()
+        self.registry = self.apps.build_registry() if self.apps else None
+        app_list = [label for label, _kind, _source in self.apps.list_apps(self.registry)
+                    if label not in browser_set] if self.apps else []
         self.app_labels = set(app_list)
         self.labels = self.browser_labels + app_list
 
@@ -277,22 +312,28 @@ class RulesApp(Gtk.Application):
         self._reload_targets()
         self.rows = []
 
-        win = Gtk.ApplicationWindow(application=self, title="Browser Picker — Rules")
-        win.set_default_size(780, 500)
+        win = Gtk.ApplicationWindow(application=self, title="Browser Picker")
+        win.set_default_size(900, 540)
         self.win = win
+
+        self.pages = Gtk.Stack()
+        switcher = Gtk.StackSwitcher(stack=self.pages, halign=Gtk.Align.CENTER)
+        header_bar = Gtk.HeaderBar(title_widget=switcher)
+        rescan_btn = Gtk.Button(label="Rescan profiles")
+        rescan_btn.set_tooltip_text("Re-detect installed browsers, profiles, and local apps")
+        rescan_btn.connect("clicked", self.on_rescan)
+        header_bar.pack_start(rescan_btn)
+        win.set_titlebar(header_bar)
+        win.set_child(self.pages)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         for m in ("top", "bottom", "start", "end"):
-            getattr(root, f"set_margin_{m}")(12)
-        win.set_child(root)
+            getattr(root, f"set_margin_{m}")(16)
+        self.pages.add_titled(root, "rules", "Rules")
 
         help_lbl = Gtk.Label(xalign=0)
-        help_lbl.set_markup(
-            "Links matching an <b>enabled</b> rule open directly in the chosen profile or local app "
-            "(no menu).\nPattern: plain text matches on path boundaries (covers a URL and "
-            "its child paths); <b>*</b>/<b>?</b> = glob; <b>regex:</b> prefix = regex. "
-            "First match wins — use ▲ ▼ to set priority."
-        )
+        help_lbl.set_text("The first matching enabled rule opens the link. Use ↑ and ↓ to change priority.")
+        help_lbl.add_css_class("dim-label")
         help_lbl.set_wrap(True)
         root.append(help_lbl)
 
@@ -310,9 +351,11 @@ class RulesApp(Gtk.Application):
             root.append(ctx)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        for text, w in (("On", 30), ("Pattern", 300), ("Open in", 200), ("Priv", 40), ("", 110)):
+        for text, w in (("On", 30), ("Link pattern", 240), ("Open in", 200), ("Private", 50), ("", 134)):
             l = Gtk.Label(label=text, xalign=0)
             l.set_size_request(w, -1)
+            l.set_hexpand(text == "Link pattern")
+            l.add_css_class("heading")
             header.append(l)
         root.append(header)
 
@@ -344,15 +387,11 @@ class RulesApp(Gtk.Application):
         btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         add_btn = Gtk.Button(label="＋ Add rule")
         add_btn.connect("clicked", lambda _b: self.add_row(True, "", None))
-        rescan_btn = Gtk.Button(label="⟳ Rescan profiles")
-        rescan_btn.set_tooltip_text("Re-detect installed browsers, profiles, and local apps")
-        rescan_btn.connect("clicked", self.on_rescan)
         save_btn = Gtk.Button(label="Save")
         save_btn.add_css_class("suggested-action")
         save_btn.connect("clicked", self.on_save)
         self.status = Gtk.Label(xalign=0)
         btns.append(add_btn)
-        btns.append(rescan_btn)
         btns.append(self.status)
         btns.append(Gtk.Box(hexpand=True))
         btns.append(save_btn)
@@ -368,6 +407,21 @@ class RulesApp(Gtk.Application):
         if not self.rows:
             self.add_row(True, "", None)
 
+        recommendations = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for edge in ("top", "bottom", "start", "end"):
+            getattr(recommendations, f"set_margin_{edge}")(16)
+        self.pages.add_titled(recommendations, "recommended", "Recommended defaults")
+        self.target_status = Gtk.Label(xalign=0, wrap=True)
+        self.target_status.add_css_class("dim-label")
+        recommendations.append(self.target_status)
+        self.recommendation_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.recommendation_list.set_show_separators(True)
+        suggestion_scroll = Gtk.ScrolledWindow(vexpand=True)
+        suggestion_scroll.set_child(self.recommendation_list)
+        recommendations.append(suggestion_scroll)
+        self.pages.connect("notify::visible-child-name", self.on_page_changed)
+        self.refresh_recommendations()
+
         win.present()
         if prefill_entry is not None:
             def focus():
@@ -375,6 +429,63 @@ class RulesApp(Gtk.Application):
                 prefill_entry.select_region(0, -1)
                 return False
             GLib.idle_add(focus)
+
+    def on_page_changed(self, _stack, _param):
+        if self.pages.get_visible_child_name() == "recommended":
+            self.refresh_recommendations()
+
+    def refresh_recommendations(self):
+        self.target_status.set_text(
+            f"{len(self.browser_labels)} browser profiles · {len(self.app_labels)} detected apps"
+        )
+        while child := self.recommendation_list.get_first_child():
+            self.recommendation_list.remove(child)
+        active_patterns = {row["entry"].get_text().strip() for row in self.rows
+                           if row["check"].get_active()}
+        shown = False
+        for pattern, label, private, title, reason in recommended_defaults(
+            self.browser_labels, self.apps, self.registry
+        ):
+            if pattern in active_patterns:
+                continue
+            shown = True
+            row = Gtk.Box(spacing=12, margin_top=12, margin_bottom=12, margin_start=8, margin_end=8)
+            details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
+            heading = Gtk.Label(label=title, xalign=0, wrap=True)
+            heading.add_css_class("heading")
+            details.append(heading)
+            target = f"{label} (private window)" if private else label
+            subtitle = Gtk.Label(label=f"Open in {target} · {reason}", xalign=0, wrap=True)
+            subtitle.add_css_class("dim-label")
+            details.append(subtitle)
+            row.append(details)
+            review = Gtk.Button(label="Review rule", valign=Gtk.Align.CENTER)
+            review.connect("clicked", self.review_default, pattern, label, private)
+            row.append(review)
+            self.recommendation_list.append(row)
+        if not shown:
+            self.recommendation_list.append(Gtk.Label(
+                label="No new recommendations. They appear when you repeatedly choose the same target for similar links or a supported app is detected.",
+                wrap=True, xalign=0, margin_top=12, margin_bottom=12,
+            ))
+
+    def review_default(self, _button, pattern, label, private):
+        for row in self.rows:
+            index = row["drop"].get_selected()
+            if (row["entry"].get_text().strip() == pattern
+                    and index < len(row["items"]) and row["items"][index] == label
+                    and row["priv"].get_active() == private):
+                row["check"].set_active(True)
+                break
+        else:
+            row = self.add_row(True, pattern, label, private)
+            # An explicit catch-all stays at the bottom of the effective order.
+            fallback = next((i for i, entry in enumerate(self.rows)
+                             if entry["entry"].get_text().strip() == "*"), len(self.rows) - 1)
+            self.move_row(row, fallback - self.rows.index(row))
+        self.pages.set_visible_child_name("rules")
+        row["entry"].grab_focus()
+        self.status.set_text("Review the rule, then click Save.")
 
     def add_row(self, enabled, pattern, label, private=False):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -387,7 +498,8 @@ class RulesApp(Gtk.Application):
         entry.set_text(pattern or "")
         entry.set_placeholder_text("e.g. github.com/myorg/myrepo  (or regex:… )")
         entry.set_hexpand(True)
-        entry.set_size_request(300, -1)
+        entry.set_size_request(240, -1)
+        entry.set_tooltip_text("Plain patterns match a site or path. Use * or ? for globs, or regex: for a regular expression.")
 
         items, missing = self.model_items(label)
         drop = Gtk.DropDown.new_from_strings(items)
@@ -397,7 +509,7 @@ class RulesApp(Gtk.Application):
 
         priv = Gtk.CheckButton()
         priv.set_active(bool(private))
-        priv.set_size_request(40, -1)
+        priv.set_size_request(50, -1)
         priv.set_tooltip_text("Open matching links in a private / incognito window")
 
         warn = Gtk.Label(label="⚠")
@@ -409,8 +521,9 @@ class RulesApp(Gtk.Application):
         up = Gtk.Button(label="▲")
         down = Gtk.Button(label="▼")
         remove = Gtk.Button(label="✕")
-        for b in (up, down, remove):
+        for b, hint in ((up, "Move rule up"), (down, "Move rule down"), (remove, "Remove rule")):
             b.set_size_request(28, -1)
+            b.set_tooltip_text(hint)
 
         rec = {"box": row, "check": check, "entry": entry, "drop": drop,
                "priv": priv, "warn": warn, "items": items}
@@ -425,13 +538,14 @@ class RulesApp(Gtk.Application):
             row.append(w)
         self.list_box.append(row)
         self.rows.append(rec)
+        return rec
 
     def move_row(self, rec, delta):
         i = self.rows.index(rec)
         j = i + delta
         if j < 0 or j >= len(self.rows):
             return
-        self.rows[i], self.rows[j] = self.rows[j], self.rows[i]
+        self.rows.insert(j, self.rows.pop(i))
         prev = None
         for r in self.rows:
             self.list_box.reorder_child_after(r["box"], prev)
@@ -486,8 +600,9 @@ class RulesApp(Gtk.Application):
         if dmissing:
             self.default_warn.set_tooltip_text(f"Profile '{dcur}' not found.")
         self.status.set_text(
-            f"Rescan: +{added} new profile(s) ({len(self.browser_labels)} profiles, {len(self.app_labels)} local apps)."
+            f"Found {added} new profiles and {len(self.app_labels)} local apps."
         )
+        self.refresh_recommendations()
 
     def on_save(self, _btn):
         os.makedirs(CONF, exist_ok=True)

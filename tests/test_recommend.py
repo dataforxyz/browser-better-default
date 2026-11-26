@@ -224,6 +224,18 @@ check(bprec.threshold() == 2, "default threshold is 2 (offer on 1st repeat)")
 check(peek_after([("https://x.io/a/1", W)], "https://x.io/a/1", threshold_n=2) == ("x.io/a/1", W, False),
       "1st repeat -> offer at threshold 2")
 
+# --- editor recommendations use completed choices and preserve privacy ---
+events = store_from([
+    ("https://example.com/docs/one", "Work", True),
+    ("https://example.com/docs/two", "Work", True),
+    ("https://example.net/landing", "Personal"),
+])["events"]
+check(
+    [row[:4] for row in bprec.learned_defaults(events, 2)]
+    == [("example.com/docs", "Work", True, 2)],
+    "editor lists repeated private picks, omits a single pick",
+)
+
 # --- add_rule: idempotent, inserted before a catch-all, private writes a 4th field ---
 tmp = tempfile.mkdtemp()
 bprec.CONF = tmp

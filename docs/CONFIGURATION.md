@@ -34,7 +34,7 @@ Brave|||brave
 ```
 
 Instead of writing these by hand, let the picker auto-add new profiles when it opens, or open
-the editor and click **⟳ Rescan profiles**. Profile detection scans installed browsers and
+the editor and click **Rescan profiles**. Profile detection scans installed browsers and
 their profiles:
 
 - **Chromium family** (Chromium, Brave, Chrome, Edge): from each browser's

@@ -122,6 +122,7 @@ main() {
   local url="${1:-}" r en rest pat lbl rpriv cmd choice target i l smart_out
   local apps_bin="" rec_bin="" app_rc=0 app_lbl="" app_kind="" _app_target=""
   local sug_pattern="" sug_label="" sug_priv="0" sug_item="" _sug_scope=""
+  local app_pattern="" app_scope=""
   local -a SMART=() SUG_PATTERNS=() SUG_LABELS=() SUG_PRIVS=() SUG_ITEMS=()
   local -a APP_LABELS=() NATIVE_APP_LABELS=() WEBAPP_LABELS=() APP_ORDER_ARGS=()
 
@@ -164,7 +165,7 @@ main() {
 
   # Local desktop apps & web apps that match this URL (e.g. T3 Code, Spotify, Zoom, Omarchy web apps).
   if [ -n "$url" ] && [ -n "$apps_bin" ]; then
-    while IFS=$'\t' read -r app_lbl app_kind _app_target; do
+    while IFS=$'\t' read -r app_lbl app_kind _app_target app_pattern app_scope; do
       [ -n "$app_lbl" ] || continue
       APP_LABELS+=("$app_lbl")
       if [ "$app_kind" = "webapp" ]; then
@@ -174,7 +175,13 @@ main() {
         NATIVE_APP_LABELS+=("$app_lbl")
         APP_ORDER_ARGS+=(--app "$app_lbl")
       fi
-    done < <("$apps_bin" match --url "$url" 2>/dev/null)
+      if [ -n "$rec_bin" ] && [ -n "$app_pattern" ] && ! resolve "$app_lbl" >/dev/null 2>&1; then
+        SUG_PATTERNS+=("$app_pattern")
+        SUG_LABELS+=("$app_lbl")
+        SUG_PRIVS+=(0)
+        SUG_ITEMS+=("⭐  Always open $app_scope in $app_lbl")
+      fi
+    done < <("$apps_bin" match --url "$url" --with-defaults 2>/dev/null)
   fi
 
   if [ "${#ENTRIES[@]}" -eq 0 ] && [ "${#APP_LABELS[@]}" -eq 0 ]; then
@@ -274,7 +281,11 @@ main() {
     elif is_matched_app "$sug_label" && [ -n "$apps_bin" ]; then
       if "$apps_bin" launch --label "$sug_label" --url "$url" >/dev/null 2>&1; then
         [ -n "$rec_bin" ] && "$rec_bin" addrule --pattern "$sug_pattern" --label "$sug_label" >/dev/null 2>&1
-        notify "Default set: $sug_pattern → $sug_label"
+        if [[ "$choice" == "⭐  Always open "* ]]; then
+          notify "Default saved: ${choice#⭐  Always open }"
+        else
+          notify "Default set: $sug_pattern → $sug_label"
+        fi
         [ "$#" -gt 1 ] && { shift; open_remaining_urls "$@"; }
       else
         notify "Could not open link in $sug_label."

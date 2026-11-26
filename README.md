@@ -46,9 +46,11 @@ and remembers the decisions you want to make permanent.
   (`--incognito` / `--private-window` chosen per browser family).
 - **Default for unmatched links** — optionally route everything that matches no rule to a
   chosen profile (a catch-all), instead of always showing the menu.
-- **GTK rules editor** — enable/disable, edit patterns, reorder priority (▲▼), set the
-  default, and ⚠ warnings for rules that point at a renamed/missing profile. New browser
-  profiles are auto-added when the picker opens (or manually with **⟳ Rescan profiles**).
+- **GTK rules editor** — review **Recommended defaults** from detected apps and repeated
+  picks, then edit and save the rules you want. For example, a detected Zoom client can
+  handle meeting links across regional Zoom hosts. Edit, enable, or reorder rules,
+  choose a fallback for unmatched links, and find rules that reference missing profiles.
+  New browser profiles are auto-added when the picker opens or when you click **Rescan profiles**.
 - **Routes** `http`, `https`, and `mailto`.
 
 ## Install

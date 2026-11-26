@@ -59,6 +59,23 @@ check(bpr.load_rules() == [(True, "github.com/org", "A", False),
                            (True, "*", "A", False)],
       "load_rules parses rules incl. private 4th field")
 
+recommender = bpr._recommend_module()
+check(recommender is not None, "rules editor loads its sibling recommender")
+if recommender:
+    recommender.STORE = os.path.join(tmp, "history.json")
+    recommender.SETTINGS = os.path.join(tmp, "settings.conf")
+    with open(recommender.SETTINGS, "w") as f:
+        f.write("threshold=2\n")
+    history = {}
+    recommender.record_event(history, "https://example.com/docs/one", "A", 1, private=True)
+    recommender.record_event(history, "https://example.com/docs/two", "A", 2, private=True)
+    recommender.save_store(history)
+    check(
+        list(bpr.recommended_defaults(["A"], None, None))
+        == [("example.com/docs", "A", True, "example.com/docs", "Chosen 2 times")],
+        "rules editor loads learned private recommendations",
+    )
+
 # load_labels combines browsers.conf and discovered local apps without duplicates
 bf = os.path.join(tmp, "browsers.conf")
 with open(bf, "w") as f:

@@ -211,6 +211,32 @@ def peek(events, host, segs, threshold_n):
     return (chosen[0], chosen[1], chosen[2]) if chosen else None
 
 
+def learned_defaults(events, threshold_n):
+    """Rank habits supported by completed picks, one candidate per site section."""
+    recent = {}
+    for event in reversed(events):
+        host, segs = event.get("host"), event.get("segs") or []
+        if host:
+            recent.setdefault((host, tuple(segs[:1])), event)
+    by_host = {}
+    for event in events:
+        by_host.setdefault(event.get("host"), []).append(event)
+
+    ranked = {}
+    for (host, _section), event in recent.items():
+        # The link menu anticipates one more pick. The editor only counts picks
+        # already made.
+        chosen = best_recommendation(by_host[host], host, event.get("segs") or [], threshold_n + 1)
+        if chosen:
+            pattern, label, private, count = chosen
+            ranked.setdefault((pattern, label, private), (count, event.get("url")))
+    return sorted(
+        ((pattern, label, private, count, url)
+         for (pattern, label, private), (count, url) in ranked.items()),
+        key=lambda item: -item[3],
+    )
+
+
 def scope_name(pattern, host, segs):
     pat_segs = pattern.split("/")[1:]
     if not pat_segs:
@@ -318,18 +344,18 @@ def add_rule(pattern, label, private=False):
     if os.path.exists(RULES_FILE):
         with open(RULES_FILE) as f:
             lines = [ln.rstrip("\n") for ln in f]
-    for ln in lines:
+    for i, ln in enumerate(lines):
         parts = ln.split("|||")
         if len(parts) >= 3 and parts[1] == pattern and parts[2] == label \
                 and (len(parts) > 3 and parts[3] == "1") == bool(private):
-            return False  # already there
-    insert_at = len(lines)
-    for i, ln in enumerate(lines):
-        parts = ln.split("|||")
-        if len(parts) >= 3 and parts[1] == "*":
-            insert_at = i
+            if parts[0] == "1":
+                return False
+            lines[i] = new
             break
-    lines.insert(insert_at, new)
+    else:
+        insert_at = next((i for i, ln in enumerate(lines)
+                          if ln.split("|||", 2)[1:2] == ["*"]), len(lines))
+        lines.insert(insert_at, new)
     with open(RULES_FILE, "w") as f:
         f.write("\n".join(lines) + "\n")
     return True
