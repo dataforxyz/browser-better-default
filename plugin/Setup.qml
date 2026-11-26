@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
+import Quickshell
 import Quickshell.Io
 import qs.Commons
 
@@ -15,7 +16,6 @@ Item {
 
   function open() {
     opened = true
-    window.requestActivate()
   }
 
   function close() {
@@ -40,17 +40,18 @@ Item {
     }
   }
 
-  Window {
+  FloatingWindow {
     id: window
     title: strings.t("title")
     visible: root.opened
-    width: 480
-    height: content.implicitHeight + 48
+    implicitWidth: 480
+    implicitHeight: content.implicitHeight + 48
     color: Color.background
-    onClosing: function(event) {
-      event.accepted = false
-      if (root.shell) root.shell.hide("browser-better-default")
-      else root.close()
+    onVisibleChanged: {
+      if (!visible && root.opened) {
+        if (root.shell) root.shell.hide("browser-better-default")
+        else root.close()
+      }
     }
 
     ColumnLayout {
