@@ -264,7 +264,7 @@ and adds the extension to user-level browser flags files. The extension uses Chr
 `browser-picker` quietly notes which profile you manually pick for which link (including
 private-window picks, tracked separately; never links already auto-routed by a rule). Once
 you've opened a similar place in the same profile a couple of times, the **next** time you
-open a matching link the picker shows one-click default shortcuts near the top, with the rule
+open a matching link the picker shows one-click default shortcuts after the one-time choices, with the rule
 scope front-loaded so it is clear what will be saved:
 
 ```

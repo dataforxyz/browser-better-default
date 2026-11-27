@@ -1,7 +1,7 @@
 #!/bin/bash
 # browser-picker — pick a browser + profile when opening a link, with smart-default rules.
 # Default http/https/mailto handler (browser-picker.desktop).
-# Config (edit via the "Browser Picker Rules" app, the in-menu "Always open…", or by hand):
+# Config (edit via Browser Better Default, the in-menu "Create a rule" action, or by hand):
 #   ~/.config/browser-picker/browsers.conf   browser+profile entries
 #   ~/.config/browser-picker/rules.conf      smart-default rules
 
@@ -73,6 +73,14 @@ menu() {  # prompt on $1, options on stdin -> selected line on stdout
   else
     walker --dmenu --width 380 -p "$prompt" 2>/dev/null
   fi
+}
+
+unique_menu_item() {
+  local item="$1" hint="$2"
+  while printf '%s\n' "${MENU_ITEMS[@]}" | grep -Fxq -- "$item"; do
+    item="$item ($hint)"
+  done
+  printf '%s' "$item"
 }
 
 entry_labels() { local e; for e in "${ENTRIES[@]}"; do printf '%s\n' "${e%%|||*}"; done; }
@@ -245,17 +253,19 @@ main() {
   MENU_ITEMS=("${SMART[@]}")
   for l in "${SMART[@]}"; do
     resolve "$l" >/dev/null 2>&1 || continue
-    private_item="$l$PRIV_SUFFIX"
-    while printf '%s\n' "${MENU_ITEMS[@]}" | grep -Fxq -- "$private_item"; do
-      private_item="$private_item (private)"
-    done
+    private_item="$(unique_menu_item "$l$PRIV_SUFFIX" private)"
     PRIVATE_ITEMS+=("$private_item")
     PRIVATE_TARGETS+=("$l")
     MENU_ITEMS+=("$private_item")
   done
-  MENU_ITEMS+=("${SUG_ITEMS[@]}")
-  [[ "$url" == mailto:* ]] && REMEMBER_LABEL="📌  Create a rule for email links…"
+  for i in "${!SUG_ITEMS[@]}"; do
+    SUG_ITEMS[i]="$(unique_menu_item "${SUG_ITEMS[i]}" rule)"
+    MENU_ITEMS+=("${SUG_ITEMS[i]}")
+  done
+  [[ "${url,,}" == mailto:* ]] && REMEMBER_LABEL="📌  Create a rule for email links…"
+  REMEMBER_LABEL="$(unique_menu_item "$REMEMBER_LABEL" editor)"
   [ -n "$url" ] && MENU_ITEMS+=("$REMEMBER_LABEL")
+  EDIT_LABEL="$(unique_menu_item "$EDIT_LABEL" editor)"
   MENU_ITEMS+=("$EDIT_LABEL")
 
   choice="$(printf '%s\n' "${MENU_ITEMS[@]}" | menu "$(menu_prompt "$url")")" || menu_status=$?
@@ -279,7 +289,7 @@ main() {
       return 1 ;;
   esac
 
-  # A "⭐ Default for ..." shortcut: open in the learned profile/app AND write the rule.
+  # An "Always open" shortcut saves the rule and opens this link.
   for ((i = 0; i < ${#SUG_ITEMS[@]}; i++)); do
     [ "$choice" = "${SUG_ITEMS[i]}" ] || continue
     sug_pattern="${SUG_PATTERNS[i]}"; sug_label="${SUG_LABELS[i]}"; sug_priv="${SUG_PRIVS[i]}"
