@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import Quickshell.Io
@@ -218,6 +219,7 @@ Item {
     signal setupRequested(bool refreshOnly)
     signal traceRequested(string request)
 
+    property bool _deferredAutosave: false
     onAllowAutosaveChanged: scheduleAutosave()
 
     Timer {
@@ -662,6 +664,7 @@ Item {
         }
         var incomingFallback = safeDoc.fallback !== undefined && safeDoc.fallback !== null ? String(safeDoc.fallback).trim() : "";
         var incomingSig = payloadSignature(incomingRules, incomingFallback);
+        var wasRescan = _rescanInFlight;
         var wasFirstLoad = !_hasLoadedDocument;
         var keepSavedDraft = _awaitingSave
             && payloadSignature(draftRules, draftFallback) === incomingSig;
@@ -715,6 +718,12 @@ Item {
                 statusShowRulesLink = false;
             }
             recomputeDirty();
+        }
+        if (wasRescan && !savedSuccess) {
+            _rescanInFlight = false;
+            statusMessage = "Refreshed " + browserTargets.length + " browser profiles and " + appTargets.length + " apps.";
+            statusIsWarning = false;
+            statusShowRulesLink = false;
         }
         rebuildVisibleRules();
         rebuildSuggestions();
@@ -1250,6 +1259,9 @@ Item {
     }
 
     function setFallback(value) {
+        statusMessage = "";
+        statusIsWarning = false;
+        statusShowRulesLink = false;
         draftFallback = String(value || "").trim();
         recomputeDirty();
     }
@@ -1348,8 +1360,13 @@ Item {
     }
 
     function requestRescan() {
-        if (busy)
-            return ;
+        if (busy || _awaitingSave || dirty) {
+            if (dirty) {
+                statusMessage = "Save or discard changes before rescanning targets.";
+                statusIsWarning = true;
+            }
+            return;
+        }
 
         _rescanInFlight = true;
         statusMessage = "";
@@ -1536,12 +1553,22 @@ Item {
     implicitHeight: Style.space(540)
     onDocumentChanged: applyDocument(document)
     onBusyChanged: {
+        // Resume only a scheduled edit interrupted by another operation.
+        // A save request stops its timer first, so failed saves are not retried.
+        if (busy && autosaveDelay.running && !_awaitingSave) {
+            _deferredAutosave = true;
+            autosaveDelay.stop();
+        }
         if (!busy) {
             Qt.callLater(function() {
                 if (!root.busy) {
                     root._rescanInFlight = false;
                     root._awaitingSave = false;
                     root._automaticSave = false;
+                    if (root._deferredAutosave) {
+                        root._deferredAutosave = false;
+                        root.scheduleAutosave();
+                    }
                 }
             });
         }
@@ -3148,227 +3175,319 @@ Item {
 
         }
 
-        // Settings
-        Toggle {
+        // Settings scroll independently while Save and Discard remain accessible.
+        Flickable {
+            id: settingsScroll
+            objectName: "settingsScroll"
             visible: root.activeTab === "settings"
             Layout.fillWidth: true
-            enabled: root._hasLoadedDocument
-            label: "Autosave"
-            description: "Save completed rule edits automatically."
-            checked: root.autosave
-            onClicked: {
-                root.autosave = !root.autosave;
-                root.autosaveChosen(root.autosave);
-                root.scheduleAutosave();
+            Layout.fillHeight: true
+            clip: true
+            contentWidth: width
+            contentHeight: settingsContent.implicitHeight + Style.spacing.sm
+            function revealFocus(item) {
+                if (!visible || !item) return;
+                let ancestor = item;
+                while (ancestor && ancestor !== settingsContent) ancestor = ancestor.parent;
+                if (!ancestor) return;
+                const point = item.mapToItem(contentItem, 0, 0);
+                const margin = Style.spacing.sm;
+                let nextY = contentY;
+                if (point.y < contentY + margin) nextY = point.y - margin;
+                else if (point.y + item.height > contentY + height - margin) nextY = point.y + item.height - height + margin;
+                contentY = Math.max(0, Math.min(nextY, contentHeight - height));
             }
-        }
-
-        RowLayout {
-            visible: root.activeTab === "settings"
-            enabled: !root._awaitingSave
-            Layout.fillWidth: true
-            spacing: Style.spacing.md
-
-            Text {
-                textFormat: Text.PlainText
-                text: "Unmatched links"
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                font.bold: true
-            }
-
-            Text {
-                textFormat: Text.PlainText
-                text: "→"
-                color: Util.alpha(root.foreground, 0.55)
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-            }
-
-            TargetPicker {
-                id: fallbackPicker
-                tooltipText: "Choose what happens when no rule matches a link"
-
-                Layout.fillWidth: true
-                subtle: false
-                warning: root.fallbackMissing
-                value: root.draftFallback
-                options: root.fallbackTargetOptions()
-                placeholderText: root.askLabel
-                onPicked: function(val) {
-                    root.setFallback(val);
+            Connections {
+                target: root.Window.window
+                function onActiveFocusItemChanged() {
+                    Qt.callLater(() => settingsScroll.revealFocus(target.activeFocusItem));
                 }
             }
-
-            WarningBadge {
-                visible: root.fallbackMissing
-                tooltipText: "Browser profile '" + root.draftFallback + "' not found — pick another or Rescan."
+            onHeightChanged: Qt.callLater(() => revealFocus(root.Window.window ? root.Window.window.activeFocusItem : null))
+            boundsBehavior: Flickable.StopAtBounds
+            Controls.ScrollBar.vertical: Controls.ScrollBar {
+                id: settingsScrollBar
+                width: Style.space(9)
+                policy: settingsScroll.contentHeight > settingsScroll.height ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
+                padding: Style.space(2)
+                anchors.right: settingsScroll.right
+                contentItem: Rectangle { implicitWidth: Style.space(6); color: Util.alpha(root.foreground, 0.48); radius: width / 2 }
             }
-
-        }
-
-        PanelSectionHeader {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-            text: "System and detection"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-        }
-
-        RowLayout {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-            Button {
-                text: "Set as default link handler"
-                tooltipText: "Register Browser Picker to handle links opened from other apps"
-                bordered: true
-                focusable: true
-                enabled: !root.busy
-                onClicked: root.setupRequested(false)
-            }
-            Button {
-                text: "Refresh launchers"
-                tooltipText: "Reinstall Browser Picker’s desktop launchers"
-                bordered: true
-                focusable: true
-                enabled: !root.busy
-                onClicked: root.setupRequested(true)
-            }
-            Button {
-                text: "Rescan targets"
-                tooltipText: "Find newly installed apps and browser profiles"
-                bordered: true
-                focusable: true
-                enabled: !root.busy
-                onClicked: root.requestRescan()
-            }
-
-        }
-
-        Text {
-            visible: root.activeTab === "settings"
-            textFormat: Text.PlainText
-            text: root.browserTargets.length + " browser profiles · " + root.appTargets.length + " detected apps"
-            color: Util.alpha(root.foreground, 0.65)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-        }
-
-        Button {
-            visible: root.activeTab === "settings"
-            text: "Run recommended setup"
-            tooltipText: "Review web app profiles and recommended link rules again"
-            bordered: true
-            focusable: true
-            enabled: !root.busy
-            onClicked: root.startRecommendedSetup()
-        }
-
-        Button {
-            visible: root.activeTab === "settings" && root.editorBackend !== ""
-            text: "Scan web app profiles"
-            tooltipText: "Find web app shortcuts that can open in the last-used browser profile"
-            bordered: true
-            focusable: true
-            onClicked: {
-                webappProfilesPopup.guided = false;
-                webappProfilesPopup.open();
-                webappProfilesPopup.scan();
-            }
-        }
-
-        PanelSectionHeader {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-            text: "GitHub"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-        }
-
-        RowLayout {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-
-            Repeater {
-                model: [
-                    { label: "Repository", tooltip: "Browse the source and project documentation on GitHub", path: "" },
-                    { label: "Report an issue", tooltip: "Open the GitHub issue form for bugs or feature requests", path: "/issues/new/choose" },
-                    { label: "Open a pull request", tooltip: "Compare branches on GitHub to propose a change", path: "/compare" }
-                ]
-                Button {
-                    required property var modelData
-                    text: modelData.label
-                    tooltipText: modelData.tooltip
-                    bordered: true
-                    focusable: true
-                    onClicked: Qt.openUrlExternally("https://github.com/dataforxyz/browser-better-default" + modelData.path)
-                }
-            }
-        }
-
-        Item {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-            Layout.preferredHeight: profileShortcuts.implicitHeight
-
             ColumnLayout {
-                id: profileShortcuts
-                width: parent.width
-                spacing: Style.spacing.sm
-
-                PanelSectionHeader {
+                id: settingsContent
+                width: settingsScroll.width - (settingsScrollBar.visible ? settingsScrollBar.width + Style.spacing.sm : 0)
+                spacing: Style.spacing.md
+                // Settings
+                Toggle {
+                    visible: root.activeTab === "settings"
                     Layout.fillWidth: true
-                    text: "Browser profiles in the app launcher"
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
+                    enabled: root._hasLoadedDocument && !root.busy && !root._awaitingSave
+                    opacity: enabled ? 1 : 0.4
+                    label: "Autosave"
+                    description: "Save completed rule edits automatically."
+                    checked: root.autosave
+                    onClicked: {
+                        root.statusMessage = "";
+                        root.statusIsWarning = false;
+                        root.statusShowRulesLink = false;
+                        root.autosave = !root.autosave;
+                        root.autosaveChosen(root.autosave);
+                        root.scheduleAutosave();
+                    }
+                }
+
+                RowLayout {
+                    visible: root.activeTab === "settings"
+                    enabled: root._hasLoadedDocument && !root.busy && !root._awaitingSave
+                    opacity: enabled ? 1 : 0.4
+                    Layout.fillWidth: true
+                    spacing: Style.spacing.md
+
+                    Text {
+                        textFormat: Text.PlainText
+                        text: "Unmatched links"
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        font.bold: true
+                    }
+
+                    Text {
+                        textFormat: Text.PlainText
+                        text: "→"
+                        color: Util.alpha(root.foreground, 0.55)
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                    }
+
+                    TargetPicker {
+                        id: fallbackPicker
+                        tooltipText: "Choose what happens when no rule matches a link"
+
+                        Layout.fillWidth: true
+                        subtle: false
+                        warning: root.fallbackMissing
+                        value: root.draftFallback
+                        options: root.fallbackTargetOptions()
+                        placeholderText: root.askLabel
+                        onPicked: function(val) {
+                            root.setFallback(val);
+                        }
+                    }
+
+                    WarningBadge {
+                        visible: root.fallbackMissing
+                        tooltipText: "Browser profile '" + root.draftFallback + "' not found — pick another or Rescan."
+                    }
+
                 }
 
                 Text {
+                    visible: root.fallbackMissing
                     Layout.fillWidth: true
-                    text: "Add a shortcut for each Chromium, Firefox, or Zen profile so you can open it directly from the app launcher. Sync only adds missing shortcuts and leaves existing ones in place."
+                    text: "Unmatched-link target “" + root.draftFallback + "” is unavailable. Choose another browser profile or Always ask."
                     textFormat: Text.PlainText
                     wrapMode: Text.WordWrap
-                    color: root.foreground
+                    color: root.urgent
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                 }
 
-                Toggle {
+                PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+                PanelSectionHeader {
+                    visible: root.activeTab === "settings"
                     Layout.fillWidth: true
-                    enabled: root.profileSyncLoaded && !root.profileSyncBusy
-                    label: "Sync automatically"
-                    description: "Add missing shortcuts when Browser Picker scans profiles while opening a link."
-                    checked: root.profileSyncEnabled
-                    onClicked: root.profileSyncToggled(!root.profileSyncEnabled)
+                    text: "System and detection"
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
                 }
 
-                RowLayout {
+                Flow {
+                    visible: root.activeTab === "settings"
                     Layout.fillWidth: true
+                    spacing: Style.spacing.sm
                     Button {
-                        text: "Sync now"
-                        tooltipText: "Add missing browser-profile shortcuts to the app launcher"
+                        text: "Set as default link handler"
+                        tooltipText: "Register Browser Picker to handle links opened from other apps"
                         bordered: true
                         focusable: true
-                        enabled: !root.profileSyncBusy
-                        onClicked: root.profileSyncRequested()
+                        enabled: !root.busy && !root._awaitingSave
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.setupRequested(false)
                     }
-                    Text {
-                        Layout.fillWidth: true
-                        text: root.profileSyncBusy ? "Working…" : root.profileSyncStatus
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        color: root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
+                    Button {
+                        text: "Refresh launchers"
+                        tooltipText: "Reinstall Browser Picker’s desktop launchers"
+                        bordered: true
+                        focusable: true
+                        enabled: !root.busy && !root._awaitingSave
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.setupRequested(true)
+                    }
+                    Button {
+                        objectName: "settingsRescan"
+                        text: "Rescan targets"
+                        tooltipText: "Find newly installed apps and browser profiles"
+                        bordered: true
+                        focusable: true
+                        enabled: root._hasLoadedDocument && !root.busy && !root._awaitingSave && !root.dirty
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.requestRescan()
+                    }
+
+                }
+
+                Text {
+                    visible: root.dirty
+                    Layout.fillWidth: true
+                    text: "Save or discard changes before rescanning targets."
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    color: Util.alpha(root.foreground, 0.7)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                    visible: root.activeTab === "settings"
+                    textFormat: Text.PlainText
+                    text: root.browserTargets.length + " browser profiles · " + root.appTargets.length + " detected apps"
+                    color: Util.alpha(root.foreground, 0.65)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                }
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: Style.spacing.sm
+                    Button {
+                        visible: root.activeTab === "settings"
+                        text: "Run recommended setup"
+                        tooltipText: "Review web app profiles and recommended link rules again"
+                        bordered: true
+                        focusable: true
+                        enabled: !root.busy && !root._awaitingSave
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.startRecommendedSetup()
+                    }
+
+                    Button {
+                        visible: root.activeTab === "settings" && root.editorBackend !== ""
+                        text: "Scan web app profiles"
+                        tooltipText: "Find web app shortcuts that can open in the last-used browser profile"
+                        bordered: true
+                        focusable: true
+                        enabled: !root.busy && !root._awaitingSave
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: {
+                            webappProfilesPopup.guided = false;
+                            webappProfilesPopup.open();
+                            webappProfilesPopup.scan();
+                        }
+                    }
+
+                }
+
+                PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+                PanelSectionHeader {
+                    visible: root.activeTab === "settings"
+                    Layout.fillWidth: true
+                    text: "GitHub"
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                }
+
+                Flow {
+                    visible: root.activeTab === "settings"
+                    Layout.fillWidth: true
+                    spacing: Style.spacing.sm
+
+                    Repeater {
+                        model: [
+                        { label: "Repository", tooltip: "Browse the source and project documentation on GitHub", path: "" },
+                        { label: "Report an issue", tooltip: "Open the GitHub issue form for bugs or feature requests", path: "/issues/new/choose" },
+                        { label: "Open a pull request", tooltip: "Compare branches on GitHub to propose a change", path: "/compare" }
+                        ]
+                        Button {
+                            required property var modelData
+                            text: modelData.label
+                            tooltipText: modelData.tooltip
+                            bordered: true
+                            focusable: true
+                            onClicked: Qt.openUrlExternally("https://github.com/dataforxyz/browser-better-default" + modelData.path)
+                        }
                     }
                 }
+
+                Item {
+                    visible: root.activeTab === "settings"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: profileShortcuts.implicitHeight
+
+                    ColumnLayout {
+                        id: profileShortcuts
+                        width: parent.width
+                        spacing: Style.spacing.sm
+
+                        PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+                        PanelSectionHeader {
+                            Layout.fillWidth: true
+                            text: "Browser profiles in the app launcher"
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Add a shortcut for each Chromium, Firefox, or Zen profile so you can open it directly from the app launcher. Sync only adds missing shortcuts and leaves existing ones in place."
+                            textFormat: Text.PlainText
+                            wrapMode: Text.WordWrap
+                            color: Util.alpha(root.foreground, 0.72)
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                        }
+
+                        Toggle {
+                            Layout.fillWidth: true
+                            enabled: root.profileSyncLoaded && !root.profileSyncBusy && !root.busy && !root._awaitingSave
+                            opacity: enabled ? 1 : 0.4
+                            label: "Sync automatically"
+                            description: "Add missing shortcuts when Browser Picker scans profiles while opening a link."
+                            checked: root.profileSyncEnabled
+                            onClicked: root.profileSyncToggled(!root.profileSyncEnabled)
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Button {
+                                text: "Sync now"
+                                tooltipText: "Add missing browser-profile shortcuts to the app launcher"
+                                bordered: true
+                                focusable: true
+                                enabled: !root.profileSyncBusy && !root.busy && !root._awaitingSave
+                                opacity: enabled ? 1 : 0.4
+                                onClicked: root.profileSyncRequested()
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: root.profileSyncBusy ? "Working…" : root.profileSyncStatus
+                                textFormat: Text.PlainText
+                                wrapMode: Text.Wrap
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                            }
+                        }
+                    }
+                }
+
             }
         }
 
-        Item {
-            visible: root.activeTab === "settings"
-            Layout.fillHeight: true
+        PanelSeparator {
+            visible: root.activeTab === "settings" && (root.dirty || root._awaitingSave)
+            Layout.fillWidth: true
+            foreground: root.foreground
         }
 
         RowLayout {
@@ -3413,7 +3532,9 @@ Item {
             Item { Layout.fillWidth: true }
             PanelActionButton {
                 visible: root.dirty
-                enabled: !root.busy
+                enabled: !root.busy && !root._awaitingSave
+                opacity: enabled ? 1 : 0.4
+                Accessible.name: "Discard unsaved changes"
                 iconText: "󰕌"
                 tooltipText: "Discard unsaved changes"
                 foreground: root.foreground
@@ -3963,6 +4084,8 @@ Item {
             color: _focused ? Style.focusFillFor(picker.foreground, picker.accent) : (_hot ? Style.hoverFillFor(picker.foreground, picker.accent) : (picker.subtle ? "transparent" : Style.normalFillFor(picker.foreground, picker.accent)))
             borderSpec: _focused ? Border.controlSpec("focus", picker.foreground, picker.accent) : (_hot ? Border.controlSpec("hover-cursor", picker.foreground, picker.accent) : (picker.subtle ? Border.none() : Border.controlSpec("normal", picker.foreground, picker.accent)))
             activeFocusOnTab: true
+            Accessible.role: Accessible.ComboBox
+            Accessible.name: picker === fallbackPicker ? "Unmatched links: " + picker.currentLabel() : picker.currentLabel()
             Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space || event.key === Qt.Key_Down) {
                     popup.opened ? popup.close() : popup.open();
