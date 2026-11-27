@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "browser-better-default",
   "name": "Browser Better Default",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "homepage": "https://github.com/dataforxyz/browser-better-default",
   "description": "Choose which browser profile or app opens a link.",
   "kinds": ["bar-widget", "panel"],

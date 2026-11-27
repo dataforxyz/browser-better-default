@@ -57,6 +57,10 @@ case "$INSTALL_BRIDGE" in
 esac
 
 mkdir -p "$BIN" "$APPS" "$CFG"
+setup_pending="$CFG/first-install-pending"
+if [ "$SET_DEFAULT" = "1" ] && [ ! -e "$CFG/browsers.conf" ] && [ ! -e "$CFG/rules.conf" ]; then
+  touch "$setup_pending"
+fi
 
 # Executables: symlinked so edits in the repo go live immediately.
 ln -sf "$REPO/bin/browser-picker"             "$BIN/browser-picker"
@@ -109,4 +113,11 @@ if [ "$INSTALL_BRIDGE" = "1" ]; then
   echo
   echo "Installing optional Chromium/omarchy web-app bridge (--with-bridge)..."
   "$REPO/extension/install-bridge.sh"
+fi
+
+if [ -f "$setup_pending" ] && [ "$SET_DEFAULT" = "1" ]; then
+  rm -f "$setup_pending"
+  if [ -t 1 ] && [ -n "${WAYLAND_DISPLAY:-}" ] && command -v omarchy-shell >/dev/null 2>&1; then
+    omarchy-shell shell summon browser-better-default '{"setup":true}' >/dev/null 2>&1 || true
+  fi
 fi

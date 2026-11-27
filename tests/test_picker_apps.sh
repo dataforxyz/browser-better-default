@@ -99,13 +99,13 @@ if grep -Fq "T3 Code  🕶 Private" "$MENU_SEEN"; then
 fi
 grep -Fq "Firefox — default  🕶 Private" "$MENU_SEEN" || { echo "FAIL: browser should keep Private twin" >&2; exit 1; }
 
-# 2) Second T3 thread link: should offer ⭐ app.t3.codes → T3 Code; picking it writes rule & launches T3.
+# 2) Second T3 thread link: should offer ⭐ Always open app.t3.codes in T3 Code; picking it writes rule & launches T3.
 : > "$LOG"
-export BROWSER_PICKER_MENU="tee '$MENU_SEEN' >/dev/null; printf '⭐  app.t3.codes → T3 Code\n'"
+export BROWSER_PICKER_MENU="tee '$MENU_SEEN' >/dev/null; printf '⭐  Always open app.t3.codes in T3 Code\n'"
 "$ROOT/bin/browser-picker" "https://app.t3.codes/threads/env-1/thread-2"
 wait_for_log "T3:t3code://threads/env-1/thread-2"
 
-grep -Fq "⭐  app.t3.codes → T3 Code" "$MENU_SEEN" || { echo "FAIL: missing learned T3 suggestion" >&2; cat "$MENU_SEEN" >&2; exit 1; }
+grep -Fq "⭐  Always open app.t3.codes in T3 Code" "$MENU_SEEN" || { echo "FAIL: missing learned T3 suggestion" >&2; cat "$MENU_SEEN" >&2; exit 1; }
 grep -Fq "1|||app.t3.codes|||T3 Code" "$XDG_CONFIG_HOME/browser-picker/rules.conf" || { echo "FAIL: rule not written" >&2; exit 1; }
 
 # 3) Third T3 thread link: rule skips the menu completely and opens in T3 Code.
@@ -246,5 +246,29 @@ wait_for_log "BROWSER:-P default https://zoom.us/download"
 "$ROOT/bin/browser-picker" "https://zoom.us.example.invalid/j/123456789"
 wait_for_log "BROWSER:-P default https://zoom.us.example.invalid/j/123456789"
 [ ! -s "$MENU_SEEN" ]
+
+# Menu output is usable only when the menu succeeds and selects an offered row.
+: > "$XDG_CONFIG_HOME/browser-picker/rules.conf"
+: > "$LOG"
+cat > "$TMP/mockbin/setsid" <<'EOF'
+#!/usr/bin/env bash
+# Run fixture targets synchronously so a stray launch can't beat the assertion.
+[ "$1" = "-f" ] && shift
+exec "$@"
+EOF
+chmod +x "$TMP/mockbin/setsid"
+export BROWSER_PICKER_MENU='cat >/dev/null; printf "%s\n" "Firefox — default"; exit 1'
+"$ROOT/bin/browser-picker" "https://cancel.example.invalid/"
+export BROWSER_PICKER_MENU='cat >/dev/null; printf "%s\n" "unlisted target"'
+"$ROOT/bin/browser-picker" "https://cancel.example.invalid/"
+[ ! -s "$LOG" ]
+
+# A profile whose name matches an action remains a one-time choice.
+printf '%s\n' '⭐  Always open Zoom meetings in Zoom|||mock-browser -P "action-name"' >> "$XDG_CONFIG_HOME/browser-picker/browsers.conf"
+export BROWSER_PICKER_MENU="tee '$MENU_SEEN' >/dev/null; printf '%s\n' '⭐  Always open Zoom meetings in Zoom'"
+"$ROOT/bin/browser-picker" "https://us02web.zoom.us/j/123456789?pwd=test"
+grep -Fxq '⭐  Always open Zoom meetings in Zoom (rule)' "$MENU_SEEN"
+grep -Fq 'BROWSER:-P action-name ' "$LOG"
+[ ! -s "$XDG_CONFIG_HOME/browser-picker/rules.conf" ]
 
 echo "test_picker_apps.sh: all passed"

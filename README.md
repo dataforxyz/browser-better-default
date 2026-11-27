@@ -4,6 +4,25 @@ A Linux link picker that lets you choose a **browser profile, desktop app, or in
 web app**. Set smart defaults to open recurring links directly in your preferred app
 or profile.
 
+## Quick install
+
+On Omarchy Quattro, run this from your regular user account:
+
+```sh
+omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable &&
+  omarchy-shell shell summon browser-better-default '{"setup":true}'
+```
+
+This opens **Browser Better Default** and starts the guide for setting up
+link handling, the optional extension, and app rules. To reopen the window later,
+use the bar’s tray or run:
+
+```sh
+omarchy-shell shell summon browser-better-default '{}'
+```
+
+[Manual install and update instructions](#install)
+
 **Open T3 Code thread links in the desktop app.** Click an `app.t3.codes` share link
 and choose **T3 Code** to jump to the exact thread, including delegated threads on
 linked environments. The picker also offers installed apps for supported links like
@@ -42,10 +61,10 @@ and remembers the decisions you want to make permanent.
   directly, no menu. Plain text matches on **path/host boundaries** (covers a URL *and its
   child paths*, but `…/repo` won't match `…/repo-staging`); `*`/`?` = glob; `regex:` prefix
   = full regex. First match wins.
-- **In-flow rule creation** — pick *📌 Always open this site in…* from the menu and the Omarchy
+- **In-flow rule creation** — pick *📌 Create a rule for links like this…* from the menu and the Omarchy
   editor opens **pre-filled** from the current URL; trim the scope, pick a profile, Save.
 - **Learns your habits** — repeat a profile for a site and the picker grows explicit
-  `⭐ scope → profile` shortcuts at the top (see below). Fully **local & offline**.
+  `⭐ Always open scope in profile` shortcuts below one-time choices (see below). Fully **local & offline**.
 - **Private/incognito** — every profile also appears as a *🕶 Private* twin in the menu
   (regular profiles first, private ones below), so one pick opens it in a private window
   (`--incognito` / `--private-window` chosen per browser family).
@@ -68,12 +87,13 @@ and remembers the decisions you want to make permanent.
 ### Omarchy Quattro (recommended)
 
 ```sh
-omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable
+omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable &&
+  omarchy-shell shell summon browser-better-default '{"setup":true}'
 ```
 
-Open **Browser Better Default** from the bar's tray, choose **Settings**, and click **Set as default
-link handler**. This registers Browser Picker for web and email links. If the
-tray is hidden, open the setup window from a terminal:
+In the guide, use **Set as default** to register it for web and email links. If you’ve already
+dismissed the prompt, choose **Settings → Run recommended setup**. If the tray
+is hidden, open the window from a terminal:
 
 ```sh
 omarchy-shell shell summon browser-better-default '{}'
@@ -109,6 +129,9 @@ git clone https://github.com/dataforxyz/browser-better-default
 cd browser-better-default
 ./install.sh
 ```
+
+On a first interactive Wayland install, the script opens the guide if the
+Omarchy plugin is enabled. Updates and launcher refreshes leave the GUI closed.
 
 The `main` branch targets current Omarchy Quattro. The previous pre-Quattro version is
 preserved as [`archive/pre-quattro-20261115`](https://github.com/dataforxyz/browser-better-default/tree/archive/pre-quattro-20261115).
@@ -241,12 +264,12 @@ and adds the extension to user-level browser flags files. The extension uses Chr
 `browser-picker` quietly notes which profile you manually pick for which link (including
 private-window picks, tracked separately; never links already auto-routed by a rule). Once
 you've opened a similar place in the same profile a couple of times, the **next** time you
-open a matching link the picker shows one-click default shortcuts near the top, with the rule
+open a matching link the picker shows one-click default shortcuts after the one-time choices, with the rule
 scope front-loaded so it is clear what will be saved:
 
 ```
-⭐  github.com/myorg → Chromium — Work
-⭐  github.com/myorg/myrepo → Chromium — Work
+⭐  Always open github.com/myorg in Chromium — Work
+⭐  Always open github.com/myorg/myrepo in Chromium — Work
 ```
 
 Pick it and the link opens in that profile **and** the rule is written, so it auto-routes from
@@ -262,14 +285,13 @@ veto an obvious habit; a genuine 50/50 tie stays quiet):
 | a few orgs on a host you only use with one profile      | `github.com`      |
 
 Picks made in a **private/incognito** window are learned separately: repeat one and the
-shortcut offers a *private* default (e.g. *⭐ example.com → Brave 🕶 Private*), which writes a rule
+shortcut offers a *private* default (e.g. *⭐ Always open example.com in Brave 🕶 Private*), which writes a rule
 that always opens that scope in a private window. Normal and private habits never mix.
 
-The **menu itself is smart-ordered**: the profile you're most likely to want for *this* link
-(by host/path affinity, then overall use) is the **first** item, any `⭐ scope → profile`
-shortcuts follow it, and the rest of your profiles follow most-used-first; the manual
-*📌 Always open…* and *⚙ Edit rules…* sit at the end. (Ordering controls what's surfaced
-first; once you start typing, your menu program does its own fuzzy ranking.)
+The **menu itself is smart-ordered**. The destination you're most likely to want
+for this link comes first. One-time destinations and private windows come
+before the **Always open** choices that save a rule. **Create a rule for links
+like this** and **Edit rules** sit at the end. Type to filter the list.
 
 This is a **local recommender** (`browser-picker-recommend`) — no network, no API keys, no
 LLM; your URLs never leave the machine. History lives in
