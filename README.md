@@ -189,9 +189,8 @@ as well, choose **Install web app bridge** in the System integration step of
 
 You can also run `extension/install-bridge.sh` directly after a core install. Read
 **[docs/BRIDGE.md](docs/BRIDGE.md)** first. The bridge installs a native-messaging host
-and auto-loads a small local Chromium extension by editing user-level browser flags files;
-this is intentionally opt-in because it grants the extension broad navigation permissions
-and logs diverted app-window URLs locally for debugging.
+and adds the extension to user-level browser flags files. The extension uses Chromium's
+`webNavigation` and `nativeMessaging` permissions to pass eligible links to the local picker.
 
 ## Privacy and safety
 
@@ -199,8 +198,8 @@ and logs diverted app-window URLs locally for debugging.
 - Your profile list and rules live under `~/.config/browser-picker/`.
 - The local recommender stores up to 1000 recently picked `http(s)` URLs in
   `~/.config/browser-picker/history.json`. Delete that file any time to reset learning.
-- The optional web-app bridge writes diagnostics, including app-window link URLs, to
-  `~/.cache/browser-picker/bridge.log`. Delete that file any time.
+- Older versions of the optional bridge logged app-window URLs to
+  `~/.cache/browser-picker/bridge.log`. You can delete that file.
 - `browsers.conf` commands are local shell command snippets. Do not paste browser-picker
   config from people you do not trust.
 
@@ -256,6 +255,8 @@ minimum `2`.
 
 ## Development
 
+The test suite requires Python 3 and Node.js.
+
 ```sh
 bash tests/run.sh   # shellcheck + bash syntax + py_compile + unit tests
 ```
@@ -265,6 +266,7 @@ bash tests/run.sh   # shellcheck + bash syntax + py_compile + unit tests
 - `tests/test_apps.py` — native desktop app URL converters, XDG discovery, web apps, and `apps.conf`.
 - `tests/test_rules.py` — `default_pattern`, `normcmd`, `model_items`, `load_rules`, `load_labels`.
 - `tests/test_recommend.py` — local recommender pattern, ranking, private-mode, and rule-writing logic.
+- `tests/test_bridge.js` and `tests/test_bridge_host.py` — extension routing and native messaging.
 
 CI runs the same suite on every push/PR (see `.github/workflows/ci.yml`).
 

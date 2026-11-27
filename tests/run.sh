@@ -39,4 +39,8 @@ python3 "$HERE/test_rules.py"
 python3 "$HERE/test_editor_data.py"
 python3 "$HERE/test_recommend.py"
 
+echo "== bridge tests =="
+node "$HERE/test_bridge.js"
+python3 "$HERE/test_bridge_host.py"
+
 echo "ALL TESTS PASSED"
