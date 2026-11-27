@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import Quickshell.Io
@@ -41,7 +42,6 @@ Item {
     property color background: Commons.Color.background
     property color accent: Commons.Color.accent
     property color urgent: Commons.Color.urgent
-    readonly property color disabledTint: urgent.r > urgent.g && urgent.r > urgent.b ? urgent : "#df7777"
     property color muted: Commons.Color.muted
     property color popupBackground: Commons.Color.popups.background
     property color popupBorder: Commons.Color.popups.border
@@ -53,14 +53,74 @@ Item {
     property string activeTab: "rules"
     // "rules" | "suggestions"
     property string searchQuery: ""
+    onSearchQueryChanged: {
+        if (selectingRules) selectedRules = {};
+        rebuildVisibleRules();
+    }
     property string suggestionSearch: ""
     property string suggestionSort: "recommended"
     property string suggestionKind: "all"
     property string editingSuggestionKey: ""
+    property int suggestionPatternRevision: 0
+    property string pendingSuggestionKey: ""
+    property int lastAddedUid: -1
+    property var suggestionUndo: null
     readonly property bool tracingUrl: /^(https?:\/\/\S+|mailto:\S+)$/i.test(searchQuery.trim())
     readonly property string traceRequest: tracingUrl
         ? JSON.stringify(Object.assign(buildSavePayload(draftRules, draftFallback), { url: searchQuery.trim() }))
         : ""
+    readonly property var regexPatterns: {
+        suggestionPatternRevision;
+        const patterns = draftRules.map(rule => rule.pattern.trim());
+        for (let i = 0; i < rawSuggestions.length; i++) {
+            const raw = rawSuggestions[i];
+            const edit = _suggestionEdits[suggestionKeyFor(raw, i)];
+            patterns.push(String(edit && edit.pattern !== undefined ? edit.pattern : raw.pattern || "").trim());
+        }
+        return [...new Set(patterns.filter(pattern => pattern.startsWith("regex:")))];
+    }
+    property var invalidRegexPatterns: ({})
+    property string validatedRegexSignature: "[]"
+    property bool _manualSavePending: false
+    onRegexPatternsChanged: regexValidationDelay.restart()
+    Timer {
+        id: regexValidationDelay
+        interval: 180
+        onTriggered: {
+            if (root.regexPatterns.length === 0) {
+                root.invalidRegexPatterns = ({});
+                root.validatedRegexSignature = "[]";
+                root.finishRegexValidation();
+                return;
+            }
+            if (regexValidator.running) return;
+            regexValidator.patterns = root.regexPatterns.slice();
+            regexValidator.command = ["bash", "-c",
+                'i=0; for pattern; do [[ "" =~ $pattern ]]; result=$?; if [[ $result == 2 ]]; then printf "%s\\n" "$i"; fi; i=$((i+1)); done; exit 0',
+                "validate-rule-patterns"].concat(regexValidator.patterns.map(pattern => pattern.slice(6)));
+            regexValidator.running = true;
+        }
+    }
+    Process {
+        id: regexValidator
+        property var patterns: []
+        stdout: StdioCollector { id: regexValidationOutput }
+        onExited: function(code) {
+            const signature = JSON.stringify(patterns);
+            if (signature !== JSON.stringify(root.regexPatterns)) {
+                regexValidationDelay.restart();
+                return;
+            }
+            const invalid = {};
+            if (code === 0) {
+                for (const index of regexValidationOutput.text.trim().split("\n").filter(value => value !== ""))
+                    invalid[patterns[Number(index)]] = true;
+                root.invalidRegexPatterns = invalid;
+                root.validatedRegexSignature = signature;
+                root.finishRegexValidation();
+            }
+        }
+    }
     property var traceResult: null
     property string traceError: ""
     property string sortMode: "priority" // "site" | "priority" | "pattern" | "target"
@@ -92,6 +152,7 @@ Item {
     property var selectedRules: ({})
     property int selectionAnchor: -1
     property var pendingRemoval: []
+    property var removalUndo: []
     property int dragRuleUid: -1
     property int dragTarget: -1
     property real dragPointerY: 0
@@ -136,6 +197,8 @@ Item {
         }
         return count;
     }
+    readonly property int incompleteRuleCount: draftRules.filter(rule => !rule.pattern.trim() || !rule.label.trim()
+        || rule.label === noneFoundLabel || invalidPatternReason(rule.pattern)).length
     readonly property int invalidPrivateCount: {
         var count = 0;
         for (var i = 0; i < draftRules.length; i++) {
@@ -160,6 +223,7 @@ Item {
     signal setupRequested(bool refreshOnly)
     signal traceRequested(string request)
 
+    property bool _deferredAutosave: false
     onAllowAutosaveChanged: scheduleAutosave()
 
     Timer {
@@ -174,6 +238,7 @@ Item {
     function canAutosave() {
         return autosave && allowAutosave && dirty && !busy && _hasLoadedDocument
             && editingPatternUid < 0 && pendingRemoval.length === 0 && dragRuleUid < 0
+            && validatedRegexSignature === JSON.stringify(regexPatterns)
             && draftRules.every(rule => rule.pattern.trim() && rule.label.trim()
                 && rule.label !== noneFoundLabel && !invalidPatternReason(rule.pattern)
                 && (!rule.isPrivate || !isAppTarget(rule.label)));
@@ -354,8 +419,6 @@ Item {
                 : action === "private" ? { isPrivate: value } : { enabled: value }));
         statusMessage = "";
         statusIsWarning = false;
-        selectedRules = {};
-        selectingRules = false;
         recomputeDirty();
         rebuildVisibleRules();
         rebuildSuggestions();
@@ -382,8 +445,8 @@ Item {
             if (searchField)
                 searchField.forceActiveFocus();
 
-        } else if (suggestionsList && suggestionsList.count > 0) {
-            suggestionsList.forceActiveFocus();
+        } else if (activeTab === "suggestions" && actionableSuggestionCount > 0) {
+            suggestionSearchField.forceActiveFocus();
         }
     }
 
@@ -428,6 +491,9 @@ Item {
 
         }
         var trimmed = s.trim();
+        if (trimmed.startsWith("regex:") && Object.prototype.hasOwnProperty.call(invalidRegexPatterns, trimmed)
+                && invalidRegexPatterns[trimmed] === true)
+            return "Invalid regex pattern (Bash regular expression).";
         if (trimmed !== "" && trimmed.charAt(trimmed.length - 1) === "|")
             return "Pattern cannot end with '|'.";
 
@@ -603,8 +669,9 @@ Item {
         }
         var incomingFallback = safeDoc.fallback !== undefined && safeDoc.fallback !== null ? String(safeDoc.fallback).trim() : "";
         var incomingSig = payloadSignature(incomingRules, incomingFallback);
+        var wasRescan = _rescanInFlight;
         var wasFirstLoad = !_hasLoadedDocument;
-        var keepSavedDraft = _awaitingSave && _automaticSave
+        var keepSavedDraft = _awaitingSave
             && payloadSignature(draftRules, draftFallback) === incomingSig;
         var shouldReplaceDraft = wasFirstLoad || _awaitingSave || !dirty || (incomingRevision !== _lastRevision && payloadSignature(draftRules, draftFallback) === incomingSig);
         if (wasFirstLoad && ["priority", "site", "pattern", "target"].includes(doc.sort))
@@ -623,6 +690,9 @@ Item {
             _automaticSave = false;
             _rescanInFlight = false;
             if (!keepSavedDraft) {
+                suggestionUndo = null;
+                lastAddedUid = -1;
+                pendingSuggestionKey = "";
                 editingSuggestionKey = "";
                 selectedRules = {};
                 selectingRules = false;
@@ -653,6 +723,12 @@ Item {
                 statusShowRulesLink = false;
             }
             recomputeDirty();
+        }
+        if (wasRescan && !savedSuccess) {
+            _rescanInFlight = false;
+            statusMessage = "Refreshed " + browserTargets.length + " browser profiles and " + appTargets.length + " apps.";
+            statusIsWarning = false;
+            statusShowRulesLink = false;
         }
         rebuildVisibleRules();
         rebuildSuggestions();
@@ -731,6 +807,14 @@ Item {
             rows[k].endsGroup = gCount > 1 && (k + 1 === rows.length || rows[k + 1].siteName !== site);
         }
         reconcileRulesModel(rows);
+        if (selectingRules) {
+            const shown = new Set(rows.map(row => row.uid));
+            const selected = {};
+            for (const uid of Object.keys(selectedRules)) {
+                if (shown.has(Number(uid))) selected[uid] = true;
+            }
+            selectedRules = selected;
+        }
     }
 
     // Diff-update visibleRulesModel by uid so active delegates keep focus & state.
@@ -791,8 +875,7 @@ Item {
     }
 
     function rebuildSuggestions() {
-        var activePatterns = {
-        };
+        var activePatterns = Object.create(null);
         for (var i = 0; i < draftRules.length; i++) {
             if (draftRules[i].enabled) {
                 var p = String(draftRules[i].pattern || "").trim();
@@ -830,12 +913,17 @@ Item {
                 "pattern": effPattern,
                 "label": effLabel,
                 "isPrivate": effPrivate,
-                "kind": raw.kind || (root.isAppTarget(origLabel) ? "desktop" : "browser"),
+                "kind": suggestionTargetKind(effLabel),
                 "uses": Number(raw.uses) || 0,
                 "lastUsed": Number(raw.last_used) || 0
             });
         }
         actionableSuggestionCount = desired.length;
+        if (!desired.length) {
+            suggestionSearch = "";
+            suggestionSearchField.text = "";
+            suggestionKind = "all";
+        }
         const query = suggestionSearch.trim().toLowerCase();
         const shown = desired.filter(item =>
             (suggestionKind === "all" || item.kind === suggestionKind)
@@ -846,6 +934,8 @@ Item {
         else if (suggestionSort === "recent")
             shown.sort((a, b) => b.lastUsed - a.lastUsed || b.uses - a.uses);
         reconcileSuggestionsModel(shown);
+        if (editingSuggestionKey && !shown.some(item => item.suggestionKey === editingSuggestionKey))
+            editingSuggestionKey = "";
 
     }
 
@@ -895,7 +985,7 @@ Item {
 
     function _insertNewRule(pattern, label, selectAll) {
         const site = ruleSite(pattern);
-        if (pattern.trim() !== "" && !expandedSites[site])
+        if (!expandedSites[site])
             toggleSite(site);
         var chosenLabel = label !== "" ? label : (allTargets.length > 0 ? allTargets[0] : "");
         var rule = {
@@ -920,6 +1010,8 @@ Item {
         }
         draftRules = next;
         activeTab = "rules";
+        selectingRules = false;
+        selectedRules = {};
         searchQuery = "";
         filterMode = "all";
         if (searchField && searchField.text !== "")
@@ -969,6 +1061,7 @@ Item {
     }
 
     function setRulePattern(uid, pattern) {
+        if (statusIsWarning) { statusMessage = ""; statusIsWarning = false; }
         var idx = findRuleIndexByUid(uid);
         if (idx < 0)
             return ;
@@ -992,8 +1085,12 @@ Item {
     function commitRulePatternEdit(uid) {
         if (editingPatternUid === uid)
             editingPatternUid = -1;
+        const idx = findRuleIndexByUid(uid);
+        if (idx >= 0 && !expandedSites[ruleSite(draftRules[idx].pattern)])
+            toggleSite(ruleSite(draftRules[idx].pattern));
         rebuildVisibleRules();
         rebuildSuggestions();
+        Qt.callLater(() => scrollToRuleUid(uid));
         scheduleAutosave();
     }
 
@@ -1002,6 +1099,11 @@ Item {
         if (idx < 0)
             return ;
 
+        if (draftRules[idx].isPrivate && isAppTarget(label)) {
+            statusMessage = "Turn off Private before choosing a local app.";
+            statusIsWarning = true;
+            return;
+        }
         var next = draftRules.slice();
         next[idx] = Object.assign({
         }, next[idx], {
@@ -1091,7 +1193,7 @@ Item {
     function requestRemoval(uids, skipConfirmation) {
         if (busy || pendingRemoval.length || !uids.length)
             return;
-        if (skipConfirmation) {
+        if (skipConfirmation || (uids.length === 1 && draftRules.some(rule => rule.uid === uids[0] && !rule.pattern.trim()))) {
             removeRules(uids);
             return;
         }
@@ -1113,6 +1215,8 @@ Item {
     function removeRules(uids) {
         if (busy)
             return;
+        removalUndo = draftRules.map((rule, index) => ({rule: Object.assign({}, rule), index: index}))
+            .filter(entry => uids.includes(entry.rule.uid));
         draftRules = draftRules.filter(rule => !uids.includes(rule.uid));
         if (uids.includes(editingPatternUid))
             editingPatternUid = -1;
@@ -1123,11 +1227,35 @@ Item {
         rebuildSuggestions();
     }
 
+    function undoRemoval() {
+        if (busy || !removalUndo.length)
+            return;
+        const next = draftRules.slice();
+        for (const entry of removalUndo) {
+            if (!next.some(rule => rule.uid === entry.rule.uid))
+                next.splice(Math.min(entry.index, next.length), 0, entry.rule);
+            const site = ruleSite(entry.rule.pattern);
+            if (!expandedSites[site]) toggleSite(site);
+        }
+        removalUndo = [];
+        draftRules = next;
+        recomputeDirty();
+        rebuildVisibleRules();
+        rebuildSuggestions();
+    }
+
+    function removalMessage() {
+        const rules = draftRules.filter(rule => pendingRemoval.includes(rule.uid));
+        const names = rules.slice(0, 3).map(rule => rule.pattern + " → " + rule.label);
+        return "Remove " + rules.length + (rules.length === 1 ? " rule?" : " rules?")
+            + "\n" + names.join("\n") + (rules.length > 3 ? "\n+" + (rules.length - 3) + " more" : "");
+    }
+
     function jumpToPriorityOrder(uid) {
         groupBySite = false;
         filterMode = "all";
-        searchField.text = "";
         searchQuery = "";
+        searchField.text = "";
         chooseSort("priority");
         rebuildVisibleRules();
         Qt.callLater(function() {
@@ -1136,6 +1264,9 @@ Item {
     }
 
     function setFallback(value) {
+        statusMessage = "";
+        statusIsWarning = false;
+        statusShowRulesLink = false;
         draftFallback = String(value || "").trim();
         recomputeDirty();
     }
@@ -1144,6 +1275,11 @@ Item {
         if (busy)
             return ;
 
+        removalUndo = [];
+        suggestionUndo = null;
+        pendingSuggestionKey = "";
+        suggestionPatternRevision++;
+        _manualSavePending = false;
         draftRules = cloneRuleList(_baselineRules);
         editingSuggestionKey = "";
         editingPatternUid = -1;
@@ -1164,11 +1300,60 @@ Item {
         statusShowRulesLink = false;
     }
 
+    function finishRegexValidation() {
+        if (pendingSuggestionKey) {
+            const key = pendingSuggestionKey;
+            pendingSuggestionKey = "";
+            stageSuggestion(key);
+        }
+        if (_manualSavePending) {
+            _manualSavePending = false;
+            statusMessage = "";
+            requestSave(false);
+        } else {
+            scheduleAutosave();
+        }
+    }
+
+    function ruleSaveError(rule) {
+        if (!rule.pattern.trim()) return "Enter a pattern before saving.";
+        const reason = invalidPatternReason(rule.pattern);
+        if (reason) return reason;
+        if (!rule.label.trim() || rule.label === noneFoundLabel) return "Choose a target before saving.";
+        if (rule.isPrivate && isAppTarget(rule.label)) return "Private rules need a browser target. Turn off Private or choose a browser.";
+        return "";
+    }
+
     function requestSave(automatic) {
         if (busy || !dirty)
             return ;
 
         autosaveDelay.stop();
+        if (validatedRegexSignature !== JSON.stringify(regexPatterns)) {
+            _manualSavePending = true;
+            statusMessage = "Checking regex patterns…";
+            statusIsWarning = false;
+            regexValidationDelay.restart();
+            return;
+        }
+        const incomplete = draftRules.find(rule => !rule.pattern.trim() || !rule.label.trim()
+            || rule.label === noneFoundLabel || invalidPatternReason(rule.pattern)
+            || (rule.isPrivate && isAppTarget(rule.label)));
+        if (incomplete) {
+            statusMessage = ruleSaveError(incomplete);
+            statusIsWarning = true;
+            selectingRules = false;
+            selectedRules = {};
+            activeTab = "rules";
+            filterMode = "all";
+            searchQuery = "";
+            searchField.text = "";
+            if (!expandedSites[ruleSite(incomplete.pattern)]) toggleSite(ruleSite(incomplete.pattern));
+            rebuildVisibleRules();
+            _pendingFocusUid = incomplete.uid;
+            Qt.callLater(() => { scrollToRuleUid(incomplete.uid); focusSyncRequested(); });
+            return;
+        }
         var payload = buildSavePayload(draftRules, draftFallback);
         _automaticSave = !!automatic;
         _awaitingSave = true;
@@ -1180,8 +1365,13 @@ Item {
     }
 
     function requestRescan() {
-        if (busy)
-            return ;
+        if (busy || _awaitingSave || dirty) {
+            if (dirty) {
+                statusMessage = "Save or discard changes before rescanning targets.";
+                statusIsWarning = true;
+            }
+            return;
+        }
 
         _rescanInFlight = true;
         statusMessage = "";
@@ -1213,11 +1403,14 @@ Item {
     }
 
     function setSuggestionPattern(key, pattern) {
+        pendingSuggestionKey = "";
+        if (statusIsWarning) { statusMessage = ""; statusIsWarning = false; }
         var edit = _ensureSuggestionEdit(key);
         if (!edit)
             return ;
 
         edit.pattern = String(pattern);
+        suggestionPatternRevision++;
         for (var i = 0; i < suggestionsModel.count; i++) {
             if (suggestionsModel.get(i).suggestionKey === key) {
                 suggestionsModel.setProperty(i, "pattern", edit.pattern);
@@ -1227,6 +1420,8 @@ Item {
     }
 
     function setSuggestionLabel(key, label) {
+        pendingSuggestionKey = "";
+        if (statusIsWarning) { statusMessage = ""; statusIsWarning = false; }
         var edit = _ensureSuggestionEdit(key);
         if (!edit)
             return ;
@@ -1241,6 +1436,8 @@ Item {
     }
 
     function setSuggestionPrivate(key, isPrivate) {
+        pendingSuggestionKey = "";
+        if (statusIsWarning) { statusMessage = ""; statusIsWarning = false; }
         var edit = _ensureSuggestionEdit(key);
         if (!edit)
             return ;
@@ -1257,6 +1454,38 @@ Item {
         }
     }
 
+    function suggestionTargetKind(label) {
+        const source = rawSuggestions.find(item => item.label === label && item.kind);
+        return source ? source.kind : (isAppTarget(label) ? "desktop" : "browser");
+    }
+
+    function suggestionError(pattern, label, isPrivate) {
+        if (!String(pattern).trim()) return "Enter a link pattern.";
+        const error = invalidPatternReason(pattern);
+        if (error) return error;
+        if (String(pattern).trim().startsWith("regex:")
+                && validatedRegexSignature !== JSON.stringify(regexPatterns)) return "Checking regex pattern…";
+        if (!label || label === noneFoundLabel) return "Choose a target.";
+        if (isMissingTarget(label)) return "Target '" + label + "' not found. Choose another target or Rescan.";
+        if (isPrivate && isAppTarget(label)) return "Local apps cannot open private windows. Turn off Private or choose a browser.";
+        if (draftRules.some(rule => rule.enabled && rule.pattern.trim() === String(pattern).trim()))
+            return "An enabled rule already uses this pattern. Review it in Rules.";
+        return "";
+    }
+
+    function focusSuggestion(index) {
+        if (!suggestionsModel.count) {
+            if (suggestionUndo) suggestionUndoButton.forceActiveFocus(); else tabSwitcher.forceActiveFocus();
+            return;
+        }
+        const next = Math.max(0, Math.min(index, suggestionsModel.count - 1));
+        suggestionsList.positionViewAtIndex(next, ListView.Contain);
+        Qt.callLater(() => {
+            const item = suggestionsList.itemAtIndex(next);
+            if (item) item.focusEdit(); else suggestionSearchField.forceActiveFocus();
+        });
+    }
+
     function stageSuggestion(key) {
         var foundRow = null;
         for (var i = 0; i < suggestionsModel.count; i++) {
@@ -1269,20 +1498,29 @@ Item {
         if (!foundRow)
             return ;
 
-        addSuggestionRules([{
+        if (foundRow.pattern.trim().startsWith("regex:")
+                && validatedRegexSignature !== JSON.stringify(regexPatterns)) {
+            pendingSuggestionKey = key;
+            regexValidationDelay.restart();
+            return;
+        }
+        const index = i;
+        if (addSuggestionRules([{
             pattern: foundRow.pattern, label: foundRow.label, private: foundRow.isPrivate
-        }], key);
+        }], key)) focusSuggestion(index);
     }
 
     function addSuggestionRules(candidates, suggestionKey) {
+        if (busy || _awaitingSave) return false;
+        const before = cloneRuleList(draftRules);
         const next = draftRules.slice();
         for (const candidate of candidates) {
             const pattern = String(candidate.pattern || "").trim();
             const label = String(candidate.label || "").trim();
             const isPrivate = !!candidate["private"];
-            if (!pattern || !label || label === noneFoundLabel || invalidPatternReason(pattern)
-                    || (isPrivate && isAppTarget(label))) {
-                statusMessage = "Choose a valid pattern and target before adding the rule.";
+            const error = suggestionError(pattern, label, isPrivate);
+            if (error) {
+                statusMessage = error;
                 statusIsWarning = true;
                 statusShowRulesLink = false;
                 return false;
@@ -1299,6 +1537,9 @@ Item {
                 });
             }
         }
+        const changed = next.filter(rule => !before.some(old => old.uid === rule.uid && old.enabled === rule.enabled));
+        if (suggestionKey) suggestionUndo = { key: suggestionKey, changed: changed, before: before };
+        lastAddedUid = changed.length ? changed[changed.length - 1].uid : -1;
         draftRules = next;
         if (suggestionKey)
             _stagedSuggestionKeys[suggestionKey] = true;
@@ -1306,7 +1547,8 @@ Item {
         rebuildVisibleRules();
         rebuildSuggestions();
         editingSuggestionKey = "";
-        statusMessage = "";
+        statusMessage = "Added " + candidates.map(item => item.pattern + " → " + item.label).join(", ")
+            + (autosave && allowAutosave ? ". Saving automatically." : ". Save changes to apply.");
         statusIsWarning = false;
         statusShowRulesLink = true;
         return true;
@@ -1316,12 +1558,22 @@ Item {
     implicitHeight: Style.space(540)
     onDocumentChanged: applyDocument(document)
     onBusyChanged: {
+        // Resume only a scheduled edit interrupted by another operation.
+        // A save request stops its timer first, so failed saves are not retried.
+        if (busy && autosaveDelay.running && !_awaitingSave) {
+            _deferredAutosave = true;
+            autosaveDelay.stop();
+        }
         if (!busy) {
             Qt.callLater(function() {
                 if (!root.busy) {
                     root._rescanInFlight = false;
                     root._awaitingSave = false;
                     root._automaticSave = false;
+                    if (root._deferredAutosave) {
+                        root._deferredAutosave = false;
+                        root.scheduleAutosave();
+                    }
                 }
             });
         }
@@ -1332,6 +1584,7 @@ Item {
 
     }
     onFilterModeChanged: {
+        if (selectingRules) selectedRules = {};
         if (filterDropdown && filterDropdown.value !== filterMode)
             filterDropdown.value = filterMode;
 
@@ -1362,6 +1615,10 @@ Item {
                 }
             });
             event.accepted = true;
+        } else if (event.key === Qt.Key_Escape && selectingRules) {
+            selectingRules = false;
+            selectedRules = {};
+            event.accepted = true;
         } else if (event.key === Qt.Key_Escape && activeTab === "suggestions" && editingSuggestionKey) {
             closeSuggestionEditor();
             event.accepted = true;
@@ -1369,9 +1626,45 @@ Item {
     }
 
     function closeSuggestionEditor() {
+        pendingSuggestionKey = "";
+        let index = 0;
+        for (let i = 0; i < suggestionsModel.count; i++)
+            if (suggestionsModel.get(i).suggestionKey === editingSuggestionKey) index = i;
         editingSuggestionKey = "";
         rebuildSuggestions();
+        focusSuggestion(index);
+    }
+
+    function clearSuggestionFilters() {
+        suggestionSearch = "";
+        suggestionSearchField.text = "";
+        suggestionKind = "all";
+        rebuildSuggestions();
         suggestionSearchField.forceActiveFocus();
+    }
+
+    function undoSuggestion() {
+        if (!suggestionUndo || busy || _awaitingSave) return;
+        const undo = suggestionUndo;
+        const next = draftRules.slice();
+        let reverted = 0;
+        for (const changed of undo.changed) {
+            const index = next.findIndex(rule => rule.uid === changed.uid);
+            if (index < 0) continue;
+            const current = next[index];
+            if (current.pattern !== changed.pattern || current.label !== changed.label
+                    || current.isPrivate !== changed.isPrivate || current.enabled !== changed.enabled) continue;
+            const old = undo.before.find(rule => rule.uid === changed.uid);
+            if (old) next[index] = old; else next.splice(index, 1);
+            reverted++;
+        }
+        if (reverted) delete _stagedSuggestionKeys[undo.key];
+        suggestionUndo = null;
+        draftRules = next;
+        recomputeDirty(); rebuildVisibleRules(); rebuildSuggestions();
+        statusMessage = reverted ? "Undid added suggestion." : "Kept the added rule because it was edited. Nothing undone.";
+        statusIsWarning = false;
+        statusShowRulesLink = false;
     }
 
     ListModel {
@@ -1426,6 +1719,8 @@ Item {
                 }]
                 onChanged: function(nextTab) {
                     root.activeTab = nextTab;
+                    if (nextTab === "rules") root.statusShowRulesLink = false;
+                    if (nextTab !== "suggestions") root.editingSuggestionKey = "";
                     if (nextTab === "suggestions")
                         root.rebuildSuggestions();
 
@@ -1444,6 +1739,11 @@ Item {
                 fontSize: Style.font.bodySmall
                 onClicked: {
                     root.activeTab = "rules";
+                    root.searchQuery = ""; searchField.text = ""; root.filterMode = "all";
+                    const rule = root.draftRules.find(item => item.uid === root.lastAddedUid);
+                    if (rule && !root.expandedSites[root.ruleSite(rule.pattern)]) root.toggleSite(root.ruleSite(rule.pattern));
+                    root.rebuildVisibleRules();
+                    Qt.callLater(() => root.scrollToRuleUid(root.lastAddedUid));
                     root.statusShowRulesLink = false;
                 }
             }
@@ -1457,23 +1757,11 @@ Item {
                 font.pixelSize: Style.font.caption
             }
 
-            PanelActionButton {
-                visible: root.dirty
-                enabled: !root.busy
-                iconText: "󰕌"
-                tooltipText: "Discard unsaved changes"
-                foreground: root.foreground
-                hoverColor: root.urgent
-                fontFamily: root.fontFamily
-                fontSize: Style.font.iconSmall
-                focusable: true
-                bordered: true
-                onClicked: root.discardChanges()
-            }
 
             Button {
-                visible: root.activeTab === "rules"
+                visible: root.activeTab === "rules" && root.draftRules.length > 0 && !root.tracingUrl
                 text: root.selectingRules ? "Done" : "Select"
+                fontSize: Style.font.bodySmall
                 tooltipText: root.selectingRules ? "Exit selection mode and clear the selection" : "Edit or remove several rules together. Ctrl- or Shift-click also selects rows."
                 bordered: true
                 focusable: true
@@ -1499,21 +1787,7 @@ Item {
                 onClicked: root.addBlankRule()
             }
 
-            Button {
-                visible: root.dirty || root._awaitingSave
-                enabled: !root.busy && root.dirty
-                text: root.busy && root._awaitingSave ? "Saving…" : "Save changes"
-                tooltipText: "Apply rule and unmatched-link changes (Ctrl+S)"
-                selected: root.dirty && !root.busy
-                bordered: true
-                focusable: true
-                foreground: root.foreground
-                accent: root.accent
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                horizontalPadding: Style.spacing.xl
-                onClicked: root.requestSave()
-            }
+
 
         }
 
@@ -1562,8 +1836,8 @@ Item {
                 font.pixelSize: Style.font.caption
             }
             Button {
-                text: "All"
-                tooltipText: "Select or clear all filtered rules"
+                text: "Select all"
+                tooltipText: "Select or clear all filtered rules, including collapsed groups"
                 focusable: true
                 onClicked: {
                     const uids = [];
@@ -1615,7 +1889,7 @@ Item {
 
         RowLayout {
             Layout.fillWidth: true
-            visible: root.activeTab === "rules" && (!root.selectingRules || root.tracingUrl)
+            visible: root.activeTab === "rules"
             Layout.preferredHeight: searchField.implicitHeight
             spacing: Style.spacing.md
 
@@ -1629,6 +1903,7 @@ Item {
 
                     anchors.fill: parent
                     placeholderText: "Search rules or paste a link to test…"
+                    text: root.searchQuery
                     foreground: root.foreground
                     accent: root.accent
                     font.family: root.fontFamily
@@ -1669,6 +1944,13 @@ Item {
                 }
 
             }
+
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            visible: root.activeTab === "rules" && root.draftRules.length > 0 && !root.selectingRules && !root.tracingUrl
+            spacing: Style.spacing.md
 
             Item {
                 id: groupControl
@@ -1736,7 +2018,7 @@ Item {
                 visible: !root.tracingUrl
 
                 showLabel: false
-                Layout.preferredWidth: Style.space(104)
+                Layout.preferredWidth: Style.space(root.groupBySite ? 150 : 104)
                 rowHeight: searchField.implicitHeight
                 value: root.sortMode
                 foreground: root.foreground
@@ -1749,7 +2031,7 @@ Item {
                     "label": "Site A–Z"
                 }, {
                     "value": "priority",
-                    "label": "Priority"
+                    "label": root.groupBySite ? "Site priority" : "Priority"
                 }, {
                     "value": "pattern",
                     "label": "Pattern"
@@ -1899,29 +2181,45 @@ Item {
 
         }
 
-        RowLayout {
-            visible: root.activeTab === "suggestions"
+        ColumnLayout {
+            visible: root.activeTab === "suggestions" && root.actionableSuggestionCount > 0
             Layout.fillWidth: true
             spacing: Style.spacing.sm
-
-            TextField {
-                id: suggestionSearchField
+            Item {
                 Layout.fillWidth: true
-                Layout.minimumWidth: Style.space(90)
-                placeholderText: "Search suggestions…"
-                foreground: root.foreground
-                accent: root.accent
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                horizontalPadding: Style.spacing.lg
-                verticalPadding: Style.spacing.sm
-                text: root.suggestionSearch
-                onTextEdited: {
-                    root.suggestionSearch = text;
-                    root.rebuildSuggestions();
-                    suggestionsList.positionViewAtBeginning();
+                implicitHeight: suggestionSearchField.implicitHeight
+                TextField {
+                    id: suggestionSearchField
+                    anchors.fill: parent
+                    placeholderText: "Search suggestions…"
+                    foreground: root.foreground; accent: root.accent
+                    font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                    horizontalPadding: Style.spacing.lg; verticalPadding: Style.spacing.sm
+                    rightPadding: suggestionClear.visible ? Style.space(26) : Style.spacing.lg
+                    text: root.suggestionSearch
+                    onTextChanged: {
+                        if (root.suggestionSearch !== text) {
+                            root.suggestionSearch = text;
+                            root.rebuildSuggestions();
+                            suggestionsList.positionViewAtBeginning();
+                        }
+                    }
+                    Keys.onEscapePressed: event => {
+                        if (text !== "") text = ""; else event.accepted = false;
+                    }
+                }
+                PanelActionButton {
+                    id: suggestionClear
+                    visible: suggestionSearchField.text !== ""
+                    anchors.right: parent.right; anchors.rightMargin: Style.spacing.xs; anchors.verticalCenter: parent.verticalCenter
+                    iconText: "\u00d7"; tooltipText: "Clear search"; size: Style.space(20)
+                    foreground: root.foreground
+                    onClicked: { suggestionSearchField.text = ""; suggestionSearchField.forceActiveFocus(); }
                 }
             }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.spacing.sm
             HelpDropdown {
                 tooltipText: "Sort suggestions by recommendation, usage, or recency"
                 Layout.preferredWidth: Style.space(132)
@@ -1957,7 +2255,15 @@ Item {
                     suggestionsList.positionViewAtBeginning();
                 }
             }
+                Item { Layout.fillWidth: true }
+                Text {
+                    text: suggestionsModel.count + " / " + root.actionableSuggestionCount
+                    color: Util.alpha(root.foreground, 0.65)
+                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                }
+            }
         }
+
 
         PanelSeparator {
             Layout.fillWidth: true
@@ -2104,7 +2410,7 @@ Item {
 
                     Connections {
                         function onFocusSyncRequested() {
-                            Qt.callLater(rowDelegate.tryClaimFocus);
+                            rowDelegate.tryClaimFocus();
                         }
 
                         function onDraftSynced() {
@@ -2134,9 +2440,11 @@ Item {
 
                             SelectionCheck {
                                 visible: root.selectingRules
-                                checked: root.visibleSiteUids(rowDelegate.siteName).every(uid => root.selectedRules[uid])
+                                readonly property var groupUids: root.visibleSiteUids(rowDelegate.siteName)
+                                readonly property int selectedCount: groupUids.filter(uid => root.selectedRules[uid]).length
+                                checkState: selectedCount === groupUids.length ? Qt.Checked : selectedCount > 0 ? Qt.PartiallyChecked : Qt.Unchecked
                                 Accessible.name: "Select group"
-                                tooltipText: checked ? "Clear selection for this site" : "Select all shown rules for this site"
+                                tooltipText: checked ? "Clear selection for this site" : "Select all filtered rules for this site, including collapsed rules"
                                 onClicked: root.toggleSelection(root.visibleSiteUids(rowDelegate.siteName))
                             }
 
@@ -2154,7 +2462,7 @@ Item {
 
                             Text {
                                 textFormat: Text.PlainText
-                                text: rowDelegate.groupCount + " rules"
+                                text: root.selectingRules ? root.visibleSiteUids(rowDelegate.siteName).filter(uid => root.selectedRules[uid]).length + " of " + rowDelegate.groupCount + " selected" : rowDelegate.groupCount + " rules"
                                 color: Util.alpha(root.foreground, 0.48)
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
@@ -2173,10 +2481,7 @@ Item {
                         width: parent.width
                         visible: rowDelegate.groupOpen
                         height: visible ? Style.space(34) : 0
-                        color: !rowDelegate.enabled
-                            ? Util.alpha(root.disabledTint, root.selectingRules && root.selectedRules[rowDelegate.uid]
-                                ? 0.24 : rowHover.hovered ? 0.19 : 0.12)
-                            : root.selectingRules && root.selectedRules[rowDelegate.uid]
+                        color: root.selectingRules && root.selectedRules[rowDelegate.uid]
                             ? Util.alpha(root.accent, 0.13)
                             : Util.alpha(root.foreground, rowHover.hovered ? 0.07 : (rowDelegate.groupCount > 1 ? 0.035 : 0))
 
@@ -2201,7 +2506,10 @@ Item {
                                     mouse.accepted = false;
                                     return;
                                 }
-                                mouse.accepted = !!(mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier));
+                                const editingPattern = patternField.activeFocus
+                                    && patternField.contains(patternField.mapFromItem(selectionMouse, mouse.x, mouse.y));
+                                mouse.accepted = !editingPattern && (root.selectingRules
+                                    || !!(mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier)));
                                 if (!mouse.accepted)
                                     root.selectionAnchor = rowDelegate.uid;
                             }
@@ -2250,6 +2558,11 @@ Item {
                                 Accessible.role: Accessible.Button
                                 Accessible.name: "Priority " + (rowDelegate.actualIndex + 1)
                                 Accessible.onPressAction: activate()
+                                BorderSurface {
+                                    anchors.fill: parent
+                                    color: "transparent"
+                                    borderSpec: rank.activeFocus ? Border.controlSpec("focus", root.foreground, root.accent) : Border.none()
+                                }
                                 Keys.onReturnPressed: activate()
                                 Keys.onSpacePressed: activate()
 
@@ -2340,7 +2653,20 @@ Item {
                             // Enable / disable switch
                             Item {
                                 Layout.preferredWidth: enableSwitch.implicitWidth
-                                Layout.preferredHeight: enableSwitch.implicitHeight
+                                Layout.preferredHeight: Style.space(28)
+                                activeFocusOnTab: true
+                                Accessible.role: Accessible.CheckBox
+                                Accessible.name: "Enable rule #" + (rowDelegate.actualIndex + 1)
+                                Accessible.checkable: true
+                                Accessible.checked: rowDelegate.enabled
+                                Accessible.onPressAction: root.setRuleEnabled(rowDelegate.uid, !rowDelegate.enabled)
+                                Keys.onSpacePressed: root.setRuleEnabled(rowDelegate.uid, !rowDelegate.enabled)
+                                Keys.onReturnPressed: root.setRuleEnabled(rowDelegate.uid, !rowDelegate.enabled)
+                                BorderSurface {
+                                    anchors.fill: parent
+                                    color: "transparent"
+                                    borderSpec: parent.activeFocus ? Border.controlSpec("focus", root.foreground, root.accent) : Border.none()
+                                }
 
                                 ToggleSwitch {
                                     id: enableSwitch
@@ -2351,7 +2677,7 @@ Item {
                                     trackHeight: Style.space(14)
                                     trackWidth: Style.space(26)
                                     knobSize: Style.space(8)
-                                    foreground: rowDelegate.enabled ? root.foreground : root.disabledTint
+                                    foreground: root.foreground
                                     accent: root.accent
                                     onToggled: root.setRuleEnabled(rowDelegate.uid, !rowDelegate.enabled)
                                 }
@@ -2406,7 +2732,7 @@ Item {
                                 id: ruleTargetPicker
                                 tooltipText: "Choose where this rule opens matching links"
 
-                                Layout.preferredWidth: root.sortMode === "priority" ? Style.space(142) : Style.space(156)
+                                Layout.preferredWidth: !root.groupBySite && root.sortMode === "priority" ? Style.space(142) : Style.space(164)
                                 Layout.minimumWidth: Style.space(96)
                                 opacity: rowDelegate.enabled ? 1 : 0.56
                                 subtle: true
@@ -2437,6 +2763,7 @@ Item {
                             // Direct priority reorder controls (visible in Priority view)
                             PanelActionButton {
                                 visible: !root.groupBySite && root.sortMode === "priority"
+                                focusable: true
                                 enabled: root.canReorder && rowDelegate.actualIndex > 0
                                 iconText: "󰅃"
                                 size: Style.space(22)
@@ -2449,6 +2776,7 @@ Item {
 
                             PanelActionButton {
                                 visible: !root.groupBySite && root.sortMode === "priority"
+                                focusable: true
                                 enabled: root.canReorder && rowDelegate.actualIndex < root.draftRules.length - 1
                                 iconText: "󰅀"
                                 size: Style.space(22)
@@ -2511,10 +2839,19 @@ Item {
                     textFormat: Text.PlainText
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    text: root.draftRules.length === 0 ? "No rules yet. Click Add to route specific sites or paths to a browser profile or local app." : "No rules match the current search or filter."
+                    text: root.draftRules.length === 0 ? "No rules yet. Route specific sites or paths to a browser profile or local app." : "No rules match the current search or filter."
                     color: Util.alpha(root.foreground, 0.65)
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
+                }
+
+                Button {
+                    Layout.alignment: Qt.AlignHCenter
+                    visible: root.draftRules.length === 0
+                    text: "Add rule"
+                    bordered: true
+                    focusable: true
+                    onClicked: root.addBlankRule()
                 }
 
                 Button {
@@ -2546,7 +2883,7 @@ Item {
                 anchors.fill: parent
                 visible: root.activeTab === "suggestions"
                 clip: true
-                reuseItems: true
+                reuseItems: false
                 boundsBehavior: Flickable.StopAtBounds
                 model: suggestionsModel
 
@@ -2593,9 +2930,10 @@ Item {
                     readonly property bool targetMissing: root.isMissingTarget(label)
                     readonly property bool invalidPrivate: isApp && isPrivate
                     readonly property string patternError: root.invalidPatternReason(pattern)
-                    readonly property bool hasWarning: targetMissing || invalidPrivate || patternError !== ""
-                    readonly property bool canStage: pattern.trim() !== "" && patternError === "" && label.trim() !== "" && label !== root.noneFoundLabel && !invalidPrivate
-                    readonly property string warningText: patternError !== "" ? patternError : (invalidPrivate ? ("'" + label + "' is a local app and cannot open private windows — pick a browser or turn off Private.") : (targetMissing ? ("Target '" + label + "' not found — pick another or Rescan.") : ""))
+                    readonly property string warningText: root.suggestionError(pattern, label, isPrivate)
+                    readonly property bool hasWarning: warningText !== ""
+                    readonly property bool canStage: !hasWarning && !root.busy && !root._awaitingSave
+                    function focusEdit() { suggestionEditButton.forceActiveFocus(); }
 
                     readonly property bool editing: root.editingSuggestionKey === suggestionKey
                     width: suggestionsList.width - (suggestionScrollBar.visible ? suggestionScrollBar.width : 0)
@@ -2615,50 +2953,50 @@ Item {
                             visible: !suggestionCard.editing
                             spacing: Style.spacing.sm
 
-                            Text {
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                textFormat: Text.PlainText
-                                text: suggestionCard.title
-                                color: root.foreground
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.bodySmall
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                Layout.preferredWidth: Style.space(155)
-                                Layout.minimumWidth: Style.space(88)
-                                textFormat: Text.PlainText
-                                text: suggestionCard.label + (suggestionCard.isPrivate ? " · Private" : "")
-                                color: Util.alpha(root.foreground, 0.8)
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.bodySmall
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                visible: suggestionsList.width >= Style.space(510)
-                                Layout.preferredWidth: Style.space(96)
-                                textFormat: Text.PlainText
-                                text: suggestionCard.reason
-                                color: Util.alpha(root.foreground, 0.65)
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                                elide: Text.ElideRight
+                                Layout.minimumWidth: 0
+                                spacing: Style.spacing.xxs
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: suggestionCard.title; textFormat: Text.PlainText
+                                    color: root.foreground; font.family: root.fontFamily
+                                    font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: suggestionCard.pattern; textFormat: Text.PlainText
+                                    color: Util.alpha(root.foreground, 0.65); font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption; wrapMode: Text.WrapAnywhere
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "→ " + suggestionCard.label + (suggestionCard.isPrivate ? " · Private" : "")
+                                    textFormat: Text.PlainText
+                                    color: suggestionCard.targetMissing ? root.urgent : Util.alpha(root.foreground, 0.8)
+                                    font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                                    wrapMode: Text.Wrap
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    visible: text !== ""
+                                    text: suggestionCard.hasWarning ? suggestionCard.warningText : suggestionCard.reason
+                                    textFormat: Text.PlainText
+                                    color: suggestionCard.hasWarning ? root.urgent : Util.alpha(root.foreground, 0.65)
+                                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                                    wrapMode: Text.Wrap
+                                }
                             }
 
                             Button {
+                                id: suggestionEditButton
+                                objectName: "suggestionEdit-" + suggestionCard.suggestionKey
                                 text: "Edit"
                                 fontSize: Style.font.bodySmall
                                 foreground: Util.alpha(root.foreground, 0.75)
                                 focusable: true
                                 tooltipText: "Review or change the link pattern, target, and privacy"
-                                onClicked: root.editingSuggestionKey = suggestionCard.suggestionKey
-                            }
-
-                            WarningBadge {
-                                visible: suggestionCard.hasWarning
-                                tooltipText: suggestionCard.warningText
+                                onClicked: { root.editingSuggestionKey = suggestionCard.suggestionKey; root.rebuildSuggestions(); }
                             }
 
                             Button {
@@ -2666,8 +3004,9 @@ Item {
                                 fontSize: Style.font.bodySmall
                                 bordered: true
                                 enabled: suggestionCard.canStage
+                                opacity: enabled ? 1 : 0.4
                                 focusable: true
-                                tooltipText: root.autosave ? "Add a rule and save it automatically"
+                                tooltipText: suggestionCard.hasWarning ? suggestionCard.warningText : root.autosave ? "Add a rule and save it automatically"
                                     : "Add a rule to the draft. Save changes to apply it."
                                 onClicked: root.stageSuggestion(suggestionCard.suggestionKey)
                             }
@@ -2692,6 +3031,7 @@ Item {
 
                                 TextField {
                                     id: suggPatternField
+                                    objectName: "suggestionPattern-" + suggestionCard.suggestionKey
 
                                     property string syncedText: suggestionCard.pattern
 
@@ -2706,19 +3046,27 @@ Item {
                                     horizontalPadding: Style.spacing.md
                                     verticalPadding: Style.spacing.xs
                                     onSyncedTextChanged: {
-                                        if (!activeFocus && text !== syncedText)
+                                        if (text !== syncedText)
                                             text = syncedText;
 
                                     }
                                     Component.onCompleted: {
                                         text = suggestionCard.pattern;
-                                        cursorPosition = 0;
+                                        cursorPosition = text.length;
                                         forceActiveFocus();
                                     }
                                     Keys.onEscapePressed: root.closeSuggestionEditor()
                                     onTextEdited: root.setSuggestionPattern(suggestionCard.suggestionKey, text)
+                                    onAccepted: root.stageSuggestion(suggestionCard.suggestionKey)
                                 }
 
+                                Text {
+                                    Layout.fillWidth: true
+                                    visible: suggestionCard.hasWarning
+                                    text: suggestionCard.warningText; textFormat: Text.PlainText
+                                    wrapMode: Text.Wrap; color: root.urgent
+                                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                                }
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: Style.spacing.md
@@ -2746,11 +3094,21 @@ Item {
                                         onToggled: root.setSuggestionPrivate(suggestionCard.suggestionKey, !suggestionCard.isPrivate)
                                     }
 
-                                    WarningBadge {
-                                        visible: suggestionCard.hasWarning
-                                        tooltipText: suggestionCard.warningText
+                                    Text {
+                                        visible: !suggestionCard.isApp || suggestionCard.isPrivate
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.setSuggestionPrivate(suggestionCard.suggestionKey, !suggestionCard.isPrivate)
+                                        }
+                                        text: "Private"; color: Util.alpha(root.foreground, 0.7)
+                                        font.family: root.fontFamily; font.pixelSize: Style.font.caption
                                     }
 
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Item { Layout.fillWidth: true }
                                     Button {
                                         text: "Close"
                                         tooltipText: "Collapse the editor and keep your suggestion edits"
@@ -2760,7 +3118,7 @@ Item {
 
                                     Button {
                                         enabled: suggestionCard.canStage
-                                        opacity: enabled ? 1 : 0.5
+                                        opacity: enabled ? 1 : 0.4
                                         iconText: "󰄬"
                                         text: "Add to rules"
                                         bordered: true
@@ -2773,7 +3131,7 @@ Item {
                                         iconSize: Style.font.iconSmall
                                         horizontalPadding: Style.spacing.lg
                                         verticalPadding: Style.spacing.xs
-                                        tooltipText: root.autosave ? "Add a rule and save it automatically"
+                                        tooltipText: suggestionCard.hasWarning ? suggestionCard.warningText : root.autosave ? "Add a rule and save it automatically"
                                             : "Add a rule to the draft. Save changes to apply it."
                                         onClicked: root.stageSuggestion(suggestionCard.suggestionKey)
                                     }
@@ -2790,263 +3148,431 @@ Item {
 
             }
 
-            // Empty state for Suggestions view
-            Text {
+            // Empty and filtered Suggestions states
+            ColumnLayout {
                 anchors.centerIn: parent
                 width: Math.min(parent.width - Style.spacing.huge * 2, Style.space(400))
                 visible: root.activeTab === "suggestions" && suggestionsModel.count === 0
-                textFormat: Text.PlainText
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-                text: root.suggestionSearch.trim() || root.suggestionKind !== "all"
-                    ? "No suggestions match your search or filter." : "No new suggestions yet. Suggestions come from detected apps and repeated picker choices."
-                color: Util.alpha(root.foreground, 0.65)
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-            }
-
-        }
-
-        // Settings
-        Toggle {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-            enabled: root._hasLoadedDocument
-            label: "Autosave"
-            description: "Save valid rule edits and unmatched-link changes automatically."
-            checked: root.autosave
-            onClicked: {
-                root.autosave = !root.autosave;
-                root.autosaveChosen(root.autosave);
-                root.scheduleAutosave();
-            }
-        }
-
-        RowLayout {
-            visible: root.activeTab === "settings"
-            enabled: !root._awaitingSave
-            Layout.fillWidth: true
-            spacing: Style.spacing.md
-
-            Text {
-                textFormat: Text.PlainText
-                text: "Unmatched links"
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                font.bold: true
-            }
-
-            Text {
-                textFormat: Text.PlainText
-                text: "→"
-                color: Util.alpha(root.foreground, 0.55)
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-            }
-
-            TargetPicker {
-                id: fallbackPicker
-                tooltipText: "Choose what happens when no rule matches a link"
-
-                Layout.fillWidth: true
-                subtle: false
-                warning: root.fallbackMissing
-                value: root.draftFallback
-                options: root.fallbackTargetOptions()
-                placeholderText: root.askLabel
-                onPicked: function(val) {
-                    root.setFallback(val);
-                }
-            }
-
-            WarningBadge {
-                visible: root.fallbackMissing
-                tooltipText: "Browser profile '" + root.draftFallback + "' not found — pick another or Rescan."
-            }
-
-        }
-
-        PanelSectionHeader {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-            text: "System and detection"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-        }
-
-        RowLayout {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-            Button {
-                text: "Set as default link handler"
-                tooltipText: "Send web and email links opened by other apps to Browser Picker"
-                bordered: true
-                focusable: true
-                enabled: !root.busy
-                onClicked: root.setupRequested(false)
-            }
-            Button {
-                text: "Refresh launchers"
-                tooltipText: "Update app launchers and command shortcuts"
-                bordered: true
-                focusable: true
-                enabled: !root.busy
-                onClicked: root.setupRequested(true)
-            }
-            Button {
-                text: "Rescan targets"
-                tooltipText: "Refresh the list of available apps and browser profiles"
-                bordered: true
-                focusable: true
-                enabled: !root.busy
-                onClicked: root.requestRescan()
-            }
-
-        }
-
-        Text {
-            visible: root.activeTab === "settings"
-            textFormat: Text.PlainText
-            text: root.browserTargets.length + " browser profiles · " + root.appTargets.length + " detected apps"
-            color: Util.alpha(root.foreground, 0.65)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-        }
-
-        Button {
-            visible: root.activeTab === "settings"
-            text: "Run recommended setup"
-            tooltipText: "Review web app profiles, app rules, and system setup"
-            bordered: true
-            focusable: true
-            enabled: !root.busy
-            onClicked: root.startRecommendedSetup()
-        }
-
-        Button {
-            visible: root.activeTab === "settings" && root.editorBackend !== ""
-            text: "Scan web app profiles"
-            tooltipText: "Find web apps whose shortcuts can open in the wrong profile"
-            bordered: true
-            focusable: true
-            onClicked: {
-                webappProfilesPopup.guided = false;
-                webappProfilesPopup.open();
-                webappProfilesPopup.scan();
-            }
-        }
-
-        PanelSectionHeader {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-            text: "Help and feedback"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-        }
-
-        Flow {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-            spacing: Style.spacing.sm
-
-            Button {
-                text: "Read the user guide"
-                tooltipText: "Open Browser Picker documentation on GitHub"
-                focusable: true
-                onClicked: Qt.openUrlExternally(root.docsUrl + "/blob/HEAD/docs/CONFIGURATION.md")
-            }
-
-            Repeater {
-                model: [
-                    { label: "Repository", tooltip: "Browse the source and project documentation on GitHub", path: "" },
-                    { label: "Report an issue", tooltip: "Open the GitHub issue form for bugs or feature requests", path: "/issues/new/choose" },
-                    { label: "Open a pull request", tooltip: "Compare branches on GitHub to propose a change", path: "/compare" }
-                ]
-                Button {
-                    required property var modelData
-                    text: modelData.label
-                    tooltipText: modelData.tooltip
-                    bordered: true
-                    focusable: true
-                    onClicked: Qt.openUrlExternally(root.docsUrl + modelData.path)
-                }
-            }
-        }
-
-        Item {
-            visible: root.activeTab === "settings"
-            Layout.fillWidth: true
-            Layout.preferredHeight: profileShortcuts.implicitHeight
-
-            ColumnLayout {
-                id: profileShortcuts
-                width: parent.width
-                spacing: Style.spacing.sm
-
-                PanelSectionHeader {
+                spacing: Style.spacing.md
+                Text {
                     Layout.fillWidth: true
-                    text: "Browser profiles in the app launcher"
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
+                    textFormat: Text.PlainText; horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                    text: root.suggestionSearch.trim() || root.suggestionKind !== "all"
+                        ? "No suggestions match these filters."
+                        : "No new suggestions yet. Suggestions come from detected apps and repeated link choices."
+                    color: Util.alpha(root.foreground, 0.65)
+                    font.family: root.fontFamily; font.pixelSize: Style.font.body
+                }
+                Button {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: root.suggestionSearch.trim() || root.suggestionKind !== "all" ? "Clear filters" : "Rescan targets"
+                    bordered: true; focusable: true
+                    enabled: !root.busy && (root.suggestionSearch.trim() !== "" || root.suggestionKind !== "all" || !root.dirty)
+                    opacity: enabled ? 1 : 0.4
+                    tooltipText: root.dirty ? "Save or discard changes before rescanning targets." : "Find newly installed targets"
+                    onClicked: {
+                        if (root.suggestionSearch.trim() || root.suggestionKind !== "all") root.clearSuggestionFilters();
+                        else root.requestRescan();
+                    }
+                }
+            }
+
+        }
+
+        // Settings scroll independently while Save and Discard remain accessible.
+        Flickable {
+            id: settingsScroll
+            objectName: "settingsScroll"
+            visible: root.activeTab === "settings"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            clip: true
+            contentWidth: width
+            contentHeight: settingsContent.implicitHeight + Style.spacing.sm
+            function revealFocus(item) {
+                if (!visible || !item) return;
+                let ancestor = item;
+                while (ancestor && ancestor !== settingsContent) ancestor = ancestor.parent;
+                if (!ancestor) return;
+                const point = item.mapToItem(contentItem, 0, 0);
+                const margin = Style.spacing.sm;
+                let nextY = contentY;
+                if (point.y < contentY + margin) nextY = point.y - margin;
+                else if (point.y + item.height > contentY + height - margin) nextY = point.y + item.height - height + margin;
+                contentY = Math.max(0, Math.min(nextY, contentHeight - height));
+            }
+            Connections {
+                target: root.Window.window
+                function onActiveFocusItemChanged() {
+                    Qt.callLater(() => settingsScroll.revealFocus(target.activeFocusItem));
+                }
+            }
+            onHeightChanged: Qt.callLater(() => revealFocus(root.Window.window ? root.Window.window.activeFocusItem : null))
+            boundsBehavior: Flickable.StopAtBounds
+            Controls.ScrollBar.vertical: Controls.ScrollBar {
+                id: settingsScrollBar
+                width: Style.space(9)
+                policy: settingsScroll.contentHeight > settingsScroll.height ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
+                padding: Style.space(2)
+                anchors.right: settingsScroll.right
+                contentItem: Rectangle { implicitWidth: Style.space(6); color: Util.alpha(root.foreground, 0.48); radius: width / 2 }
+            }
+            ColumnLayout {
+                id: settingsContent
+                width: settingsScroll.width - (settingsScrollBar.visible ? settingsScrollBar.width + Style.spacing.sm : 0)
+                spacing: Style.spacing.md
+                // Settings
+                Toggle {
+                    visible: root.activeTab === "settings"
+                    Layout.fillWidth: true
+                    enabled: root._hasLoadedDocument && !root.busy && !root._awaitingSave
+                    opacity: enabled ? 1 : 0.4
+                    label: "Autosave"
+                    description: "Save valid rule edits and unmatched-link changes automatically."
+                    checked: root.autosave
+                    onClicked: {
+                        root.statusMessage = "";
+                        root.statusIsWarning = false;
+                        root.statusShowRulesLink = false;
+                        root.autosave = !root.autosave;
+                        root.autosaveChosen(root.autosave);
+                        root.scheduleAutosave();
+                    }
+                }
+
+                RowLayout {
+                    visible: root.activeTab === "settings"
+                    enabled: root._hasLoadedDocument && !root.busy && !root._awaitingSave
+                    opacity: enabled ? 1 : 0.4
+                    Layout.fillWidth: true
+                    spacing: Style.spacing.md
+
+                    Text {
+                        textFormat: Text.PlainText
+                        text: "Unmatched links"
+                        color: root.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        font.bold: true
+                    }
+
+                    Text {
+                        textFormat: Text.PlainText
+                        text: "→"
+                        color: Util.alpha(root.foreground, 0.55)
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                    }
+
+                    TargetPicker {
+                        id: fallbackPicker
+                        tooltipText: "Choose what happens when no rule matches a link"
+
+                        Layout.fillWidth: true
+                        subtle: false
+                        warning: root.fallbackMissing
+                        value: root.draftFallback
+                        options: root.fallbackTargetOptions()
+                        placeholderText: root.askLabel
+                        onPicked: function(val) {
+                            root.setFallback(val);
+                        }
+                    }
+
+                    WarningBadge {
+                        visible: root.fallbackMissing
+                        tooltipText: "Browser profile '" + root.draftFallback + "' not found — pick another or Rescan."
+                    }
+
                 }
 
                 Text {
+                    visible: root.fallbackMissing
                     Layout.fillWidth: true
-                    text: "Add shortcuts for your browser profiles so you can launch Work or Personal directly from the app menu. Sync adds missing shortcuts."
+                    text: "Unmatched-link target “" + root.draftFallback + "” is unavailable. Choose another browser profile or Always ask."
                     textFormat: Text.PlainText
                     wrapMode: Text.WordWrap
-                    color: root.foreground
+                    color: root.urgent
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                 }
 
-                Toggle {
+                PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+                PanelSectionHeader {
+                    visible: root.activeTab === "settings"
                     Layout.fillWidth: true
-                    enabled: root.profileSyncLoaded && !root.profileSyncBusy
-                    label: "Sync automatically"
-                    description: "Add missing shortcuts when Browser Picker scans profiles while opening a link."
-                    checked: root.profileSyncEnabled
-                    onClicked: root.profileSyncToggled(!root.profileSyncEnabled)
+                    text: "System and detection"
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
                 }
 
-                RowLayout {
+                Flow {
+                    visible: root.activeTab === "settings"
                     Layout.fillWidth: true
+                    spacing: Style.spacing.sm
                     Button {
-                        text: "Sync now"
-                        tooltipText: "Add missing browser-profile shortcuts to the app launcher"
+                        text: "Set as default link handler"
+                        tooltipText: "Register Browser Picker to handle links opened from other apps"
                         bordered: true
                         focusable: true
-                        enabled: !root.profileSyncBusy
-                        onClicked: root.profileSyncRequested()
+                        enabled: !root.busy && !root._awaitingSave
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.setupRequested(false)
                     }
                     Button {
-                        text: "Read more about shortcuts"
+                        text: "Refresh launchers"
+                        tooltipText: "Update app launchers and command shortcuts"
+                        bordered: true
                         focusable: true
-                        onClicked: Qt.openUrlExternally(root.docsUrl + "/blob/HEAD/docs/CONFIGURATION.md#browser-profile-shortcuts")
+                        enabled: !root.busy && !root._awaitingSave
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.setupRequested(true)
                     }
-                    Text {
-                        Layout.fillWidth: true
-                        text: root.profileSyncBusy ? "Working…" : root.profileSyncStatus
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        color: root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
+                    Button {
+                        objectName: "settingsRescan"
+                        text: "Rescan targets"
+                        tooltipText: "Find newly installed apps and browser profiles"
+                        bordered: true
+                        focusable: true
+                        enabled: root._hasLoadedDocument && !root.busy && !root._awaitingSave && !root.dirty
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.requestRescan()
+                    }
+
+                }
+
+                Text {
+                    visible: root.dirty
+                    Layout.fillWidth: true
+                    text: "Save or discard changes before rescanning targets."
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    color: Util.alpha(root.foreground, 0.7)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                    visible: root.activeTab === "settings"
+                    textFormat: Text.PlainText
+                    text: root.browserTargets.length + " browser profiles · " + root.appTargets.length + " detected apps"
+                    color: Util.alpha(root.foreground, 0.65)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                }
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: Style.spacing.sm
+                    Button {
+                        visible: root.activeTab === "settings"
+                        text: "Run recommended setup"
+                        tooltipText: "Review web app profiles, app rules, and system setup"
+                        bordered: true
+                        focusable: true
+                        enabled: !root.busy && !root._awaitingSave
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.startRecommendedSetup()
+                    }
+
+                    Button {
+                        visible: root.activeTab === "settings" && root.editorBackend !== ""
+                        text: "Scan web app profiles"
+                        tooltipText: "Find web app shortcuts that can open in the last-used browser profile"
+                        bordered: true
+                        focusable: true
+                        enabled: !root.busy && !root._awaitingSave
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: {
+                            webappProfilesPopup.guided = false;
+                            webappProfilesPopup.open();
+                            webappProfilesPopup.scan();
+                        }
+                    }
+
+                }
+
+                PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+                PanelSectionHeader {
+                    visible: root.activeTab === "settings"
+                    Layout.fillWidth: true
+                    text: "Help and feedback"
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                }
+
+                Flow {
+                    visible: root.activeTab === "settings"
+                    Layout.fillWidth: true
+                    spacing: Style.spacing.sm
+
+                    Repeater {
+                        model: [
+                        { label: "Read the user guide", path: "/blob/HEAD/docs/CONFIGURATION.md", tooltip: "Open Browser Picker documentation on GitHub" },
+                        { label: "Repository", tooltip: "Browse the source and project documentation on GitHub", path: "" },
+                        { label: "Report an issue", tooltip: "Open the GitHub issue form for bugs or feature requests", path: "/issues/new/choose" },
+                        { label: "Open a pull request", tooltip: "Compare branches on GitHub to propose a change", path: "/compare" }
+                        ]
+                        Button {
+                            required property var modelData
+                            text: modelData.label
+                            tooltipText: modelData.tooltip
+                            bordered: true
+                            focusable: true
+                            onClicked: Qt.openUrlExternally(root.docsUrl + modelData.path)
+                        }
                     }
                 }
+
+                Item {
+                    visible: root.activeTab === "settings"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: profileShortcuts.implicitHeight
+
+                    ColumnLayout {
+                        id: profileShortcuts
+                        width: parent.width
+                        spacing: Style.spacing.sm
+
+                        PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+                        PanelSectionHeader {
+                            Layout.fillWidth: true
+                            text: "Browser profiles in the app launcher"
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Add a shortcut for each Chromium, Firefox, or Zen profile so you can open it directly from the app launcher. Sync only adds missing shortcuts and leaves existing ones in place."
+                            textFormat: Text.PlainText
+                            wrapMode: Text.WordWrap
+                            color: Util.alpha(root.foreground, 0.72)
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                        }
+
+                        Toggle {
+                            Layout.fillWidth: true
+                            enabled: root.profileSyncLoaded && !root.profileSyncBusy && !root.busy && !root._awaitingSave
+                            opacity: enabled ? 1 : 0.4
+                            label: "Sync automatically"
+                            description: "Add missing shortcuts when Browser Picker scans profiles while opening a link."
+                            checked: root.profileSyncEnabled
+                            onClicked: root.profileSyncToggled(!root.profileSyncEnabled)
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Button {
+                                text: "Sync now"
+                                tooltipText: "Add missing browser-profile shortcuts to the app launcher"
+                                bordered: true
+                                focusable: true
+                                enabled: !root.profileSyncBusy && !root.busy && !root._awaitingSave
+                                opacity: enabled ? 1 : 0.4
+                                onClicked: root.profileSyncRequested()
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: root.profileSyncBusy ? "Working…" : root.profileSyncStatus
+                                textFormat: Text.PlainText
+                                wrapMode: Text.Wrap
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                            }
+                        }
+                    }
+                }
+
             }
         }
 
-        Item {
-            visible: root.activeTab === "settings"
-            Layout.fillHeight: true
+        PanelSeparator {
+            visible: root.activeTab === "settings" && (root.dirty || root._awaitingSave)
+            Layout.fillWidth: true
+            foreground: root.foreground
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            visible: root.suggestionUndo !== null
+            Text {
+                Layout.fillWidth: true
+                text: "Suggestion added to rules"; textFormat: Text.PlainText
+                color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+            }
+            Button { id: suggestionUndoButton; text: "Undo"; bordered: true; focusable: true; enabled: !root.busy && !root._awaitingSave; onClicked: root.undoSuggestion() }
+            Button { text: "Dismiss"; focusable: true; onClicked: root.suggestionUndo = null }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            visible: root.removalUndo.length > 0
+            Text {
+                Layout.fillWidth: true
+                text: "Removed " + root.removalUndo.length + (root.removalUndo.length === 1 ? " rule" : " rules")
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+            }
+            Button {
+                text: "Undo"
+                focusable: true
+                bordered: true
+                enabled: !root.busy
+                onClicked: root.undoRemoval()
+            }
+            Button {
+                text: "Dismiss"
+                focusable: true
+                onClicked: root.removalUndo = []
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            visible: root.dirty || root._awaitingSave
+            Item { Layout.fillWidth: true }
+            PanelActionButton {
+                visible: root.dirty
+                enabled: !root.busy && !root._awaitingSave
+                opacity: enabled ? 1 : 0.4
+                Accessible.name: "Discard unsaved changes"
+                iconText: "󰕌"
+                tooltipText: "Discard unsaved changes"
+                foreground: root.foreground
+                hoverColor: root.urgent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.iconSmall
+                focusable: true
+                bordered: true
+                onClicked: root.discardChanges()
+            }
+
+            Button {
+                visible: root.dirty || root._awaitingSave
+                enabled: !root.busy && root.dirty
+                text: root.busy && root._awaitingSave ? "Saving…" : "Save changes"
+                tooltipText: "Apply rule and unmatched-link changes (Ctrl+S)"
+                selected: root.dirty && !root.busy
+                bordered: true
+                focusable: true
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                horizontalPadding: Style.spacing.xl
+                onClicked: root.requestSave()
+            }
         }
 
         // Status / dirty / warning strip
         RowLayout {
             Layout.fillWidth: true
-            visible: root.statusMessage !== "" || root.missingRuleCount > 0 || root.invalidPrivateCount > 0
+            visible: root.statusMessage !== "" || root.missingRuleCount > 0 || root.invalidPrivateCount > 0 || root.incompleteRuleCount > 0
             spacing: Style.spacing.md
 
             Text {
@@ -3067,6 +3593,10 @@ Item {
                 text: {
                     if (root.statusMessage !== "")
                         return root.statusMessage;
+
+                    if (root.incompleteRuleCount > 0)
+                        return root.ruleSaveError(root.draftRules.find(rule => !rule.pattern.trim()
+                            || !rule.label.trim() || rule.label === root.noneFoundLabel || root.invalidPatternReason(rule.pattern)));
 
                     if (root.invalidPrivateCount > 0)
                         return "⚠ " + root.invalidPrivateCount + " rule(s) mark a local app as private — pick a browser or turn off Private.";
@@ -3658,8 +4188,7 @@ Item {
             id: confirmRemove
             anchors.fill: parent
             opened: removalOverlay.visible
-            message: root.pendingRemoval.length === 1
-                ? "Remove this rule?" : "Remove " + root.pendingRemoval.length + " selected rules?"
+            message: root.removalMessage()
             confirmText: "Remove"
             onCanceled: root.finishRemoval(false)
             onConfirmed: root.finishRemoval(true)
@@ -3700,11 +4229,11 @@ Item {
         indicator: BorderSurface {
             implicitWidth: Style.space(15)
             implicitHeight: Style.space(15)
-            color: selection.checked ? root.accent : "transparent"
+            color: selection.checkState !== Qt.Unchecked ? root.accent : "transparent"
             borderSpec: Border.flat(root.accent, selection.activeFocus ? 2 : 1)
             Text {
                 anchors.centerIn: parent
-                text: selection.checked ? "✓" : ""
+                text: selection.checkState === Qt.PartiallyChecked ? "−" : selection.checked ? "✓" : ""
                 textFormat: Text.PlainText
                 color: root.background
                 font.pixelSize: Style.font.caption
@@ -3761,6 +4290,8 @@ Item {
             color: _focused ? Style.focusFillFor(picker.foreground, picker.accent) : (_hot ? Style.hoverFillFor(picker.foreground, picker.accent) : (picker.subtle ? "transparent" : Style.normalFillFor(picker.foreground, picker.accent)))
             borderSpec: _focused ? Border.controlSpec("focus", picker.foreground, picker.accent) : (_hot ? Border.controlSpec("hover-cursor", picker.foreground, picker.accent) : (picker.subtle ? Border.none() : Border.controlSpec("normal", picker.foreground, picker.accent)))
             activeFocusOnTab: true
+            Accessible.role: Accessible.ComboBox
+            Accessible.name: picker === fallbackPicker ? "Unmatched links: " + picker.currentLabel() : picker.currentLabel()
             Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space || event.key === Qt.Key_Down) {
                     popup.opened ? popup.close() : popup.open();
@@ -4008,6 +4539,11 @@ Item {
         implicitHeight: size
         radius: Style.cornerRadius
         activeFocusOnTab: enabled
+        Accessible.role: Accessible.CheckBox
+        Accessible.name: "Private window"
+        Accessible.checkable: true
+        Accessible.checked: active
+        Accessible.onPressAction: if (enabled) toggled()
         color: activeFocus ? Style.focusFillFor(foreground, _tintColor) : (_hot ? Style.hoverFillFor(foreground, _tintColor) : (active ? Style.selectedFillFor(foreground, _tintColor) : "transparent"))
         borderSpec: activeFocus ? Border.controlSpec("focus", foreground, _tintColor) : (active ? Border.flat(Util.alpha(_tintColor, 0.55), 1) : (_hot ? Border.controlSpec("hover-cursor", foreground, _tintColor) : Border.none()))
         Keys.onReturnPressed: {
@@ -4031,7 +4567,7 @@ Item {
             x: Math.round((privBtn.width - width) / 2)
             y: Math.round((privBtn.height - height) / 2)
             text: "󰈉"
-            color: !privBtn.enabled ? Util.alpha(privBtn.foreground, 0.28) : (privBtn.invalid ? privBtn.urgent : (privBtn.active ? privBtn.accent : Util.alpha(privBtn.foreground, 0.68)))
+            color: !privBtn.enabled ? Util.alpha(privBtn.foreground, 0.28) : (privBtn.invalid ? privBtn.urgent : (privBtn.active ? privBtn.accent : Util.alpha(privBtn.foreground, privBtn._hot ? 0.68 : 0.3)))
             font.family: privBtn.fontFamily
             font.pixelSize: Style.font.iconSmall
         }

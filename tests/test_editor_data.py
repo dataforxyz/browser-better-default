@@ -758,6 +758,11 @@ class EditorDataTest(unittest.TestCase):
                 "fallback": None,
                 "revision": rev,
             },
+            {
+                "rules": [{"enabled": True, "pattern": "regex:[", "label": "Firefox", "private": False}],
+                "fallback": None,
+                "revision": rev,
+            },
             # Delimiter / newline / trailing-pipe injection in pattern
             {
                 "rules": [{"enabled": True, "pattern": "a|||b", "label": "Firefox", "private": False}],

@@ -493,6 +493,15 @@ def validate_save_payload(payload):
         label = _validate_text_field(
             item.get("label"), f"Rule {idx} 'label'", trim=False
         )
+        if pattern.startswith("regex:"):
+            # Match the router's Bash ERE dialect; Python/JS accept different syntax.
+            checked = subprocess.run(
+                ["bash", "-c", '[[ "" =~ $1 ]]', "validate-pattern", pattern[6:]],
+                capture_output=True, timeout=3,
+            )
+            if checked.returncode == 2:
+                raise ValidationError(f"Rule {idx} has an invalid regex pattern.")
+
         validated_rules.append(
             {
                 "enabled": enabled,
