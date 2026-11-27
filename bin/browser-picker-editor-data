@@ -45,7 +45,7 @@ BROWSERS_HEADER = (
     "# Format: Label|||command   (command may contain quotes; URL appended)\n"
 )
 RULES_HEADER = (
-    '# Smart-default rules — managed by the "Browser Picker Rules" app (browser-picker-rules).\n'
+    '# Smart-default rules — managed by the "Browser Better Default" app (browser-picker-rules).\n'
     "# Format: enabled|||pattern|||label[|||private]   (enabled/private 1/0; plain/glob/regex pattern)\n"
 )
 MISSING_REVISION = "missing"
@@ -519,7 +519,7 @@ def validate_app_private_policy(
     app_set = set(app_labels)
     if fallback is not None and fallback in app_set and fallback != existing_fallback:
         raise ValidationError(
-            f"Fallback '{fallback}' is a local app; choose a browser profile or null."
+            f"Fallback '{fallback}' is a local app; choose a browser profile or Always ask (show the menu)."
         )
 
     existing_private_counts = Counter(
@@ -764,7 +764,7 @@ def trace_url(raw_json):
     parsed = urllib.parse.urlsplit(url)
     if not ((parsed.scheme in ("http", "https") and parsed.hostname)
             or (parsed.scheme == "mailto" and parsed.path)):
-        raise ValidationError("Enter a complete URL.")
+        raise ValidationError("Enter a full link such as https://example.com or mailto:name@example.com.")
 
     rules = list(payload["rules"])
     fallback = payload.get("fallback")

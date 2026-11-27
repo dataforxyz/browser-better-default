@@ -8,8 +8,8 @@ browser-picker reads plain-text config files on **every** link click (no daemon,
 | `~/.config/browser-picker/rules.conf`    | smart-default rules that open matching links directly (in a browser profile or local app) |
 | `~/.config/browser-picker/apps.conf`     | optional custom local app web-URL handlers and overrides |
 
-Both ignore blank lines and lines starting with `#`. Fields are separated by `|||`.
-You normally manage these through the **Browser Picker Rules** app (`browser-picker-rules`),
+All three files ignore blank lines and lines starting with `#`. Fields are separated by `|||`.
+You normally manage these through the **Browser Better Default** app (`browser-picker-rules`),
 but they're easy to edit by hand.
 
 ## browsers.conf
@@ -34,7 +34,7 @@ Brave|||brave
 ```
 
 Instead of writing these by hand, let the picker auto-add new profiles when it opens, or open
-the editor and click **Rescan profiles**. Profile detection scans installed browsers and
+the editor and click **Rescan targets**. Profile detection scans installed browsers and
 their profiles:
 
 - **Chromium family** (Chromium, Brave, Chrome, Edge): from each browser's
@@ -54,7 +54,7 @@ enabled|||pattern|||label[|||private]
 
 - **enabled** — `1` (on) or `0` (off).
 - **pattern** — matched against the full URL (see below).
-- **label** — must exactly match a Label in `browsers.conf`. If it doesn't, the editor shows
+- **label** — must match a browser profile label in `browsers.conf` or a detected or configured app label. If it doesn't, the editor shows
   a ⚠ and preserves the rule (it won't silently rewrite it to another profile); the picker
   skips the broken rule and falls back to the menu.
 - **private** — optional `1` opens matching links in a private/incognito window.
@@ -136,6 +136,20 @@ GitHub — Web App|||*|||disabled
 ```
 
 To disable automatic local app or web-app discovery, set `apps=0` or `webapps=0` in `~/.config/browser-picker/settings.conf` (or export `BROWSER_PICKER_APPS=0` / `BROWSER_PICKER_WEBAPPS=0`).
+
+## Web app profiles
+
+Omarchy web apps can open in the last-used browser profile. **Settings → Scan web
+app profiles** checks your personal launchers for supported browsers with more
+than one profile. Choose a profile and click **Pin profile** to update that
+launcher. The URL and existing arguments are kept. The scan leaves launchers
+with an explicit profile or a custom browser data directory alone.
+
+## Browser profile shortcuts
+
+Use **Settings → Sync now** to add missing app-launcher shortcuts for Chromium,
+Firefox, and Zen profiles. Existing shortcuts are kept. **Sync automatically**
+adds missing shortcuts when Browser Picker scans profiles while opening a link.
 
 ## Menu command
 

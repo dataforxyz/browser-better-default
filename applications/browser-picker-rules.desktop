@@ -1,7 +1,7 @@
 [Desktop Entry]
 Version=1.0
 Name=Browser Better Default
-Comment=Manage which links open in which browser/profile automatically
+Comment=Manage which browser profiles and apps open matching links
 Exec=@BINDIR@/browser-picker-rules
 Icon=preferences-system
 Terminal=false

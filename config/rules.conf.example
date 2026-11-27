@@ -1,4 +1,4 @@
-# Smart-default rules — managed by the "Browser Picker Rules" app (browser-picker-rules).
+# Smart-default rules — managed by the "Browser Better Default" app (browser-picker-rules).
 # You can also edit by hand. Format:  enabled|||pattern|||label[|||private]
 #   enabled : 1 = on, 0 = off
 #   pattern : plain text = boundary-aware substring (catches a URL and its child paths,
@@ -6,7 +6,7 @@
 #             * or ?      = glob match against the whole URL
 #             regex:RE    = regular-expression match against the whole URL
 #             *           = catch-all "default for unmatched links" (keep it last)
-#   label   : must exactly match a Label in browsers.conf
+#   label   : must match a browser profile label or a detected or configured app label
 #   private : optional 1 = open in private/incognito mode
 # First enabled match wins (top to bottom). Examples (disabled):
 # 0|||github.com/myorg/myrepo|||Chromium — Default

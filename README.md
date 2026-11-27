@@ -56,7 +56,7 @@ and remembers the decisions you want to make permanent.
   to save changes manually. New browser profiles are auto-added when the picker
   opens or when you rescan targets.
 - **App setup** — choose detected apps such as Zoom and installed web apps to add
-  their link rules together. Reopen it from **Settings → Set up app links**.
+  their link rules together. Reopen it from **Settings → Run recommended setup**.
 - **Routes** `http`, `https`, and `mailto`.
 
 ## Install
@@ -150,11 +150,38 @@ set `BROWSER_PICKER_INSTALL_BRIDGE=1`. See
 - Python 3 for app detection, recommendations, and rules storage.
 - `xdg-utils`, `util-linux` (`setsid`).
 
+## Using the rules editor
+
+Rules decide which browser profile or app opens a link. Enter a domain such as
+`example.com` in the pattern field and choose where matching links should open.
+Browser Picker tries enabled rules in priority order, starting at #1. Sorting,
+filtering, and grouping change how you see the rules. Use **Reorder** to change
+which rule is tried first. When two enabled rules use the same pattern, the
+**Conflicts** filter shows the later rules. Paste a full URL into Rules search
+to check which rules match and which destination would open.
+
+**Suggestions** offers rules for detected apps and destinations you've chosen
+before. Review the pattern and destination before adding a suggestion. With
+**Autosave** off, click **Save changes** to apply rule edits and your
+**Unmatched links** choice.
+
+## Recommended setup
+
+Open **Settings → Run recommended setup** any time:
+
+1. **Set up link handling** makes Browser Picker the system handler for web
+   and email links. Install the [web app bridge](docs/BRIDGE.md) here if you
+   want Browser Better Default to open links clicked inside Chromium web apps.
+2. **Recommended app rules** lets you choose which detected apps should open
+   matching links, such as Zoom meeting links.
+3. **Optional extras** lets you pin web apps to a profile or create profile
+   shortcuts.
+
 ## Configuration
 
 Three files in `~/.config/browser-picker/`:
 
-- **`browsers.conf`** — `Label|||command` per line. The picker auto-adds newly discovered profiles; you can also use *Rescan profiles* in the editor.
+- **`browsers.conf`** — `Label|||command` per line. The picker auto-adds newly discovered profiles; you can also use *Rescan targets* in the editor.
 - **`rules.conf`** — `enabled|||pattern|||label[|||private]` per line (optional 4th field
   `1` opens matching links in a private window). Managed by the editor; `label` can name either a browser profile or a local app.
 - **`apps.conf`** — optional `Label|||pattern|||command` overrides for custom local apps, `uri:` scheme rewrites, or disabling an auto-discovered app.
@@ -180,7 +207,7 @@ you edited by hand. Set `BROWSER_PICKER_AUTO_RESCAN=0` if you do not want the pi
 
 Chromium `--app=` windows (including omarchy web apps) can open clicked links internally,
 bypassing the system default browser. If you want those links to go through browser-picker
-as well, choose **Install web app bridge** in the System integration step of
+as well, choose **Install extension** in the Set up link handling step of
 **Settings → Run recommended setup**, or opt into the bridge from the command line:
 
 ```sh
@@ -229,7 +256,7 @@ veto an obvious habit; a genuine 50/50 tie stays quiet):
 | a few orgs on a host you only use with one profile      | `github.com`      |
 
 Picks made in a **private/incognito** window are learned separately: repeat one and the
-shortcut offers a *private* default (e.g. *⭐ open in Brave 🕶 Private*), which writes a rule
+shortcut offers a *private* default (e.g. *⭐ example.com → Brave 🕶 Private*), which writes a rule
 that always opens that scope in a private window. Normal and private habits never mix.
 
 The **menu itself is smart-ordered**: the profile you're most likely to want for *this* link

@@ -112,12 +112,17 @@ Item {
     property string profileShortcuts: ""
     property string defaultHandler: ""
     property string bridge: ""
+    property bool profileShortcutsFailed: false
+    property bool defaultHandlerFailed: false
+    property bool bridgeFailed: false
   }
 
-  function reportProfileShortcuts(message) {
+  function reportProfileShortcuts(message, failed = false) {
     profileSyncStatus = message
-    if (profileSyncAction === "sync")
+    if (profileSyncAction === "sync") {
       setupHistory.profileShortcuts = message
+      setupHistory.profileShortcutsFailed = failed
+    }
   }
 
   Process {
@@ -128,7 +133,7 @@ Item {
       if (code !== 0 || status !== 0) {
         root.reportProfileShortcuts(profileSyncErrors.text.trim()
           ? strings.t("profileSyncFailed") + "\n" + profileSyncErrors.text.trim()
-          : strings.t("profileSyncFailed"))
+          : strings.t("profileSyncFailed"), true)
         return
       }
       try {
@@ -144,7 +149,7 @@ Item {
             root.reportProfileShortcuts(strings.t("profileSyncAdded").arg(result.added))
         }
       } catch (_) {
-        root.reportProfileShortcuts(strings.t("profileSyncFailed"))
+        root.reportProfileShortcuts(strings.t("profileSyncFailed"), true)
       }
     }
   }
@@ -159,6 +164,9 @@ Item {
         setupHistory.defaultHandler = root.statusKey === "success"
           ? strings.t("defaultHandlerSet")
           : strings.t("defaultHandlerFailed") + (root.errorText ? "\n" + root.errorText : "")
+      if (root.settingDefaultHandler)
+        setupHistory.defaultHandlerFailed = root.statusKey !== "success"
+      root.settingDefaultHandler = false
     }
   }
 
@@ -168,8 +176,9 @@ Item {
     stderr: StdioCollector { id: bridgeErrors }
     onExited: function(code, status) {
       setupHistory.bridge = code === 0 && status === 0
-        ? "Installed. Restart open browser and web app windows to load the bridge."
+        ? "Installer finished. Restart open browser and web app windows."
         : "Bridge installation failed." + (bridgeErrors.text.trim() ? "\n" + bridgeErrors.text.trim() : "")
+      setupHistory.bridgeFailed = code !== 0 || status !== 0
     }
   }
 
@@ -291,9 +300,12 @@ Item {
         profileSyncBusy: profileSyncWorker.running
         profileSyncStatus: root.profileSyncStatus
         setupProfileSyncStatus: setupHistory.profileShortcuts
+        setupProfileSyncFailed: setupHistory.profileShortcutsFailed
+        defaultHandlerFailed: !setup.running && setupHistory.defaultHandlerFailed
+        bridgeFailed: setupHistory.bridgeFailed
         defaultHandlerStatus: setup.running && root.settingDefaultHandler
-          ? strings.t("settingDefaultHandler") : setupHistory.defaultHandler
-        bridgeStatus: bridgeWorker.running ? "Installing bridge…" : setupHistory.bridge
+          ? strings.t("settingDefaultHandler") : (setupHistory.defaultHandler ? "Last run · " + setupHistory.defaultHandler : "")
+        bridgeStatus: bridgeWorker.running ? "Installing bridge…" : (setupHistory.bridge ? "Last run · " + setupHistory.bridge : "")
         bridgeBusy: bridgeWorker.running
         onBridgeInstallRequested: {
           if (!bridgeWorker.running)

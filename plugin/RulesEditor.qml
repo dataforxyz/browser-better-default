@@ -12,6 +12,7 @@ Item {
     // Public host contract
     property var document: null
     property string editorBackend: ""
+    readonly property string docsUrl: "https://github.com/dataforxyz/browser-better-default"
     property bool busy: false
     property bool dirty: false
     property bool autosave: true
@@ -30,6 +31,9 @@ Item {
     property string defaultHandlerStatus: ""
     property string bridgeStatus: ""
     property bool bridgeBusy: false
+    property bool bridgeFailed: false
+    property bool defaultHandlerFailed: false
+    property bool setupProfileSyncFailed: false
     property int editingPatternUid: -1
     // Scoped Omarchy theme surface — defaults track qs.Commons live and can be
     // overridden per-instance by a host window.
@@ -215,15 +219,15 @@ Item {
             appSetupPopup.open();
             return;
         }
-        webappProfilesPopup.guided = true;
-        webappProfilesPopup.open();
-        webappProfilesPopup.scan();
+        systemSetupPopup.extras = false;
+        systemSetupPopup.open();
     }
 
     function finishRecommendedSetup() {
         dismissOnboarding();
         appSetupPopup.close();
         systemSetupPopup.close();
+        webappProfilesPopup.close();
     }
 
     function advanceAppSetup() {
@@ -232,6 +236,7 @@ Item {
             return;
         }
         appSetupPopup.close();
+        systemSetupPopup.extras = true;
         systemSetupPopup.open();
     }
 
@@ -1119,7 +1124,12 @@ Item {
     }
 
     function jumpToPriorityOrder(uid) {
+        groupBySite = false;
+        filterMode = "all";
+        searchField.text = "";
+        searchQuery = "";
         chooseSort("priority");
+        rebuildVisibleRules();
         Qt.callLater(function() {
             scrollToRuleUid(uid);
         });
@@ -1404,15 +1414,15 @@ Item {
                 options: [{
                     "value": "rules",
                     "label": "Rules (" + root.draftRules.length + ")",
-                    "tooltip": "View and edit link routing rules"
+                    "tooltip": "Choose where matching links open"
                 }, {
                     "value": "suggestions",
                     "label": root.actionableSuggestionCount > 0 ? ("Suggestions (" + root.actionableSuggestionCount + ")") : "Suggestions",
-                    "tooltip": "Review suggested link rules from detected apps and your choices"
+                    "tooltip": "Make rules from detected apps and repeated choices"
                 }, {
                     "value": "settings",
                     "label": "Settings",
-                    "tooltip": "Configure saving, fallback routing, and shortcuts"
+                    "tooltip": "Set up saving, unmatched links, and app shortcuts"
                 }]
                 onChanged: function(nextTab) {
                     root.activeTab = nextTab;
@@ -1464,7 +1474,7 @@ Item {
             Button {
                 visible: root.activeTab === "rules"
                 text: root.selectingRules ? "Done" : "Select"
-                tooltipText: root.selectingRules ? "Exit selection mode and clear the selection" : "Select rules for bulk changes"
+                tooltipText: root.selectingRules ? "Exit selection mode and clear the selection" : "Edit or remove several rules together. Ctrl- or Shift-click also selects rows."
                 bordered: true
                 focusable: true
                 onClicked: {
@@ -1513,7 +1523,7 @@ Item {
             spacing: Style.spacing.md
             Text {
                 Layout.fillWidth: true
-                text: "Run the recommended one-time setup?"
+                text: "Set up link handling, web app profiles, and suggested rules?"
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 color: root.foreground
@@ -1530,7 +1540,7 @@ Item {
             }
             Button {
                 text: "Skip"
-                tooltipText: "Dismiss setup. You can set up app links later in Settings."
+                tooltipText: "Skip for now. Run recommended setup anytime in Settings."
                 focusable: true
                 onClicked: root.dismissOnboarding()
             }
@@ -1618,7 +1628,7 @@ Item {
                     id: searchField
 
                     anchors.fill: parent
-                    placeholderText: "Search or paste a URL…"
+                    placeholderText: "Search rules or paste a link to test…"
                     foreground: root.foreground
                     accent: root.accent
                     font.family: root.fontFamily
@@ -1754,7 +1764,7 @@ Item {
 
             HelpDropdown {
                 id: filterDropdown
-                tooltipText: "Show all rules or filter by status or privacy"
+                tooltipText: "Filter by whether rules are enabled, private, or conflicting"
                 visible: !root.tracingUrl
 
                 showLabel: false
@@ -1791,7 +1801,7 @@ Item {
             Button {
                 visible: !root.tracingUrl && !root.canReorder
                 text: "Reorder"
-                tooltipText: "Show flat priority order and clear filters"
+                tooltipText: "Ungroup rules and clear filters so you can change match order"
                 focusable: true
                 onClicked: {
                     root.groupBySite = false;
@@ -1860,7 +1870,7 @@ Item {
             Text {
                 Layout.fillWidth: true
                 textFormat: Text.PlainText
-                text: "Clear search and status filter to reorder priority."
+                text: "Clear search and filters to change match order."
                 color: Util.alpha(root.foreground, 0.65)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1869,7 +1879,7 @@ Item {
 
             Button {
                 text: "Clear filters"
-                tooltipText: "Clear search and show all rule statuses"
+                tooltipText: "Clear search and show all rules"
                 bordered: true
                 foreground: root.foreground
                 accent: root.accent
@@ -2321,7 +2331,7 @@ Item {
 
                                 PanelToolTip {
                                     visible: rankMouse.containsMouse
-                                    text: root.canReorder ? "Click to enter a position · Drag to reorder" : "Click to switch to Priority"
+                                    text: root.canReorder ? "Click to enter a position or drag to change match order" : "Ungroup and clear filters to change match order"
                                     fontFamily: root.fontFamily
                                 }
 
@@ -2511,7 +2521,7 @@ Item {
                     Layout.alignment: Qt.AlignHCenter
                     visible: root.draftRules.length > 0
                     text: "Clear filters"
-                    tooltipText: "Clear search and show all rule statuses"
+                    tooltipText: "Clear search and show all rules"
                     bordered: true
                     foreground: root.foreground
                     accent: root.accent
@@ -2789,7 +2799,7 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
                 text: root.suggestionSearch.trim() || root.suggestionKind !== "all"
-                    ? "No suggestions match these filters." : "No new suggestions yet."
+                    ? "No suggestions match your search or filter." : "No new suggestions yet. Suggestions come from detected apps and repeated picker choices."
                 color: Util.alpha(root.foreground, 0.65)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
@@ -2803,7 +2813,7 @@ Item {
             Layout.fillWidth: true
             enabled: root._hasLoadedDocument
             label: "Autosave"
-            description: "Save completed rule edits automatically."
+            description: "Save valid rule edits and unmatched-link changes automatically."
             checked: root.autosave
             onClicked: {
                 root.autosave = !root.autosave;
@@ -2870,7 +2880,7 @@ Item {
             Layout.fillWidth: true
             Button {
                 text: "Set as default link handler"
-                tooltipText: "Register Browser Picker to handle links opened from other apps"
+                tooltipText: "Send web and email links opened by other apps to Browser Picker"
                 bordered: true
                 focusable: true
                 enabled: !root.busy
@@ -2878,7 +2888,7 @@ Item {
             }
             Button {
                 text: "Refresh launchers"
-                tooltipText: "Reinstall Browser Picker’s desktop launchers"
+                tooltipText: "Update app launchers and command shortcuts"
                 bordered: true
                 focusable: true
                 enabled: !root.busy
@@ -2886,7 +2896,7 @@ Item {
             }
             Button {
                 text: "Rescan targets"
-                tooltipText: "Find newly installed apps and browser profiles"
+                tooltipText: "Refresh the list of available apps and browser profiles"
                 bordered: true
                 focusable: true
                 enabled: !root.busy
@@ -2907,7 +2917,7 @@ Item {
         Button {
             visible: root.activeTab === "settings"
             text: "Run recommended setup"
-            tooltipText: "Review web app profiles and recommended link rules again"
+            tooltipText: "Review web app profiles, app rules, and system setup"
             bordered: true
             focusable: true
             enabled: !root.busy
@@ -2917,7 +2927,7 @@ Item {
         Button {
             visible: root.activeTab === "settings" && root.editorBackend !== ""
             text: "Scan web app profiles"
-            tooltipText: "Find web app shortcuts that can open in the last-used browser profile"
+            tooltipText: "Find web apps whose shortcuts can open in the wrong profile"
             bordered: true
             focusable: true
             onClicked: {
@@ -2930,14 +2940,22 @@ Item {
         PanelSectionHeader {
             visible: root.activeTab === "settings"
             Layout.fillWidth: true
-            text: "GitHub"
+            text: "Help and feedback"
             foreground: root.foreground
             fontFamily: root.fontFamily
         }
 
-        RowLayout {
+        Flow {
             visible: root.activeTab === "settings"
             Layout.fillWidth: true
+            spacing: Style.spacing.sm
+
+            Button {
+                text: "Read the user guide"
+                tooltipText: "Open Browser Picker documentation on GitHub"
+                focusable: true
+                onClicked: Qt.openUrlExternally(root.docsUrl + "/blob/HEAD/docs/CONFIGURATION.md")
+            }
 
             Repeater {
                 model: [
@@ -2951,7 +2969,7 @@ Item {
                     tooltipText: modelData.tooltip
                     bordered: true
                     focusable: true
-                    onClicked: Qt.openUrlExternally("https://github.com/dataforxyz/browser-better-default" + modelData.path)
+                    onClicked: Qt.openUrlExternally(root.docsUrl + modelData.path)
                 }
             }
         }
@@ -2975,7 +2993,7 @@ Item {
 
                 Text {
                     Layout.fillWidth: true
-                    text: "Add a shortcut for each Chromium, Firefox, or Zen profile so you can open it directly from the app launcher. Sync only adds missing shortcuts and leaves existing ones in place."
+                    text: "Add shortcuts for your browser profiles so you can launch Work or Personal directly from the app menu. Sync adds missing shortcuts."
                     textFormat: Text.PlainText
                     wrapMode: Text.WordWrap
                     color: root.foreground
@@ -3001,6 +3019,11 @@ Item {
                         focusable: true
                         enabled: !root.profileSyncBusy
                         onClicked: root.profileSyncRequested()
+                    }
+                    Button {
+                        text: "Read more about shortcuts"
+                        focusable: true
+                        onClicked: Qt.openUrlExternally(root.docsUrl + "/blob/HEAD/docs/CONFIGURATION.md#browser-profile-shortcuts")
                     }
                     Text {
                         Layout.fillWidth: true
@@ -3072,12 +3095,12 @@ Item {
                 const result = JSON.parse(webappProfileOutput.text);
                 if (result.pinned) {
                     webappProfilesPopup.apps = webappProfilesPopup.apps.filter(app => app.id !== result.pinned);
-                    webappProfilesPopup.message = "Launcher profile pinned.";
+                    webappProfilesPopup.message = "Saved the profile to this web app shortcut.";
                 } else {
                     webappProfilesPopup.apps = result.apps;
                     webappProfilesPopup.message = result.apps.length
                         ? "Choose a profile for each launcher you want to pin."
-                        : "No unpinned web apps found for supported browsers with multiple profiles.";
+                        : "No shortcuts need pinning among the web apps this scan supports.";
                 }
             } catch (error) {
                 webappProfilesPopup.message = "Could not read the web app profile scan.";
@@ -3087,6 +3110,7 @@ Item {
 
     Controls.Popup {
         id: webappProfilesPopup
+        closePolicy: Controls.Popup.CloseOnEscape
         property bool guided: false
         property var apps: []
         property string message: ""
@@ -3109,9 +3133,10 @@ Item {
 
         anchors.centerIn: parent
         width: Math.min(root.width - Style.space(24), Style.space(560))
-        height: Math.min(root.height - Style.space(24), Style.space(380))
-        padding: Style.space(14)
+        height: Math.min(root.height - Style.space(24), Style.space(480))
+        padding: Style.space(16)
         modal: true
+        Controls.Overlay.modal: Rectangle { color: Util.alpha(root.background, 0.68) }
         focus: true
         background: BorderSurface {
             color: root.popupBackground
@@ -3119,24 +3144,35 @@ Item {
             radius: Style.cornerRadius
         }
         contentItem: ColumnLayout {
-            PanelSectionHeader {
+            spacing: Style.spacing.md
+            SetupHeading {
                 Layout.fillWidth: true
-                text: webappProfilesPopup.guided ? "1 of 3 · Web app profiles" : "Web app profiles"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
+                text: "Web app profiles"
+                onCloseRequested: webappProfilesPopup.close()
             }
             Text {
                 Layout.fillWidth: true
-                text: "Omarchy web apps without a pinned profile can open in whichever browser profile was used last. Pin a profile to keep each app in the right one."
+                text: "By default if you have multiple chrome profiles in omarchy webapps will just open \"random\" profiles each time you open that web app based on what profile you had open last. Keep an Omarchy web app in the browser profile that has the right account."
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
             }
+            SetupHelp {
+                text: "Read more about web app profiles ↗"
+                url: root.docsUrl + "/blob/HEAD/docs/CONFIGURATION.md#web-app-profiles"
+            }
+            PanelSeparator {
+                Layout.fillWidth: true
+                foreground: root.foreground
+            }
+
             Text {
                 Layout.fillWidth: true
                 text: webappProfilesPopup.message
+                maximumLineCount: 3
+                elide: Text.ElideRight
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: root.foreground
@@ -3147,6 +3183,7 @@ Item {
                 id: webappProfileList
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.minimumHeight: 0
                 clip: true
                 spacing: Style.spacing.sm
                 model: webappProfilesPopup.apps
@@ -3183,7 +3220,9 @@ Item {
                     }
                 }
             }
+            PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
             RowLayout {
+                Layout.fillWidth: true
                 Item { Layout.fillWidth: true }
                 Button {
                     text: "Scan again"
@@ -3193,16 +3232,11 @@ Item {
                     onClicked: webappProfilesPopup.scan()
                 }
                 Button {
-                    text: webappProfilesPopup.guided ? "Next" : "Close"
-                    tooltipText: webappProfilesPopup.guided ? "Continue to recommended app rules" : "Close the scan results"
-                    bordered: true
+                    visible: webappProfilesPopup.guided
+                    text: "Back"
+                    tooltipText: "Return to optional setup"
                     focusable: true
-                    enabled: !webappProfilesPopup.guided || !webappProfileWorker.running
-                    onClicked: {
-                        webappProfilesPopup.close();
-                        if (webappProfilesPopup.guided)
-                            appSetupPopup.open();
-                    }
+                    onClicked: webappProfilesPopup.close()
                 }
             }
         }
@@ -3210,11 +3244,13 @@ Item {
 
     Controls.Popup {
         id: appSetupPopup
+        closePolicy: Controls.Popup.CloseOnEscape
         anchors.centerIn: parent
-        width: Math.min(root.width - Style.space(24), Style.space(480))
-        height: Math.min(root.height - Style.space(24), Style.space(440))
-        padding: Style.space(14)
+        width: Math.min(root.width - Style.space(24), Style.space(560))
+        height: Math.min(root.height - Style.space(24), Style.space(480))
+        padding: Style.space(16)
         modal: true
+        Controls.Overlay.modal: Rectangle { color: Util.alpha(root.background, 0.68) }
         focus: true
         background: BorderSurface {
             color: root.popupBackground
@@ -3225,18 +3261,15 @@ Item {
         contentItem: ColumnLayout {
             spacing: Style.spacing.md
 
-            PanelSectionHeader {
+            SetupHeading {
                 Layout.fillWidth: true
                 text: root.editorBackend === "" ? "Recommended app rules" : "2 of 3 · Recommended app rules"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
+                onCloseRequested: appSetupPopup.close()
             }
 
             Text {
                 Layout.fillWidth: true
-                text: root.onboardingCandidates.length > 0
-                    ? "Choose detected apps to open matching links directly. For example, a Zoom meeting link can open in Zoom."
-                    : "There are no new recommended app rules to add."
+                text: "Choose apps that should open their own links automatically. For example, a Zoom meeting link can open directly in Zoom."
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 color: root.foreground
@@ -3244,10 +3277,20 @@ Item {
                 font.pixelSize: Style.font.bodySmall
             }
 
+            SetupHelp {
+                text: "Read more about app rules ↗"
+                url: root.docsUrl + "/blob/HEAD/docs/CONFIGURATION.md#local-apps--web-apps-appsconf"
+            }
+            PanelSeparator {
+                Layout.fillWidth: true
+                foreground: root.foreground
+            }
+
             ListView {
                 id: onboardingList
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.minimumHeight: 0
                 clip: true
                 spacing: Style.spacing.xs
                 model: root.onboardingCandidates
@@ -3257,54 +3300,81 @@ Item {
                     policy: onboardingList.contentHeight > onboardingList.height
                         ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
                 }
-                delegate: RowLayout {
+                delegate: SelectionCheck {
+                    id: appChoice
                     required property var modelData
                     width: onboardingList.width - (onboardingScroll.visible ? onboardingScroll.width + Style.spacing.xs : 0)
-                    SelectionCheck {
-                        checked: root.onboardingSelection["pattern:" + modelData.pattern] === modelData.label
-                        Accessible.name: modelData.label
-                        tooltipText: checked ? "Skip this app" : "Include this app in setup"
-                        onClicked: root.toggleOnboardingApp(modelData)
+                    leftPadding: Style.space(7)
+                    rightPadding: Style.space(7)
+                    topPadding: Style.space(5)
+                    bottomPadding: Style.space(5)
+                    checked: root.onboardingSelection["pattern:" + modelData.pattern] === modelData.label
+                    Accessible.name: modelData.label + ", " + modelData.pattern
+                    onClicked: root.toggleOnboardingApp(modelData)
+                    onActiveFocusChanged: if (activeFocus) onboardingList.positionViewAtIndex(index, ListView.Contain)
+                    required property int index
+                    background: Rectangle {
+                        color: appChoice.activeFocus || appChoice.hovered
+                            ? Util.alpha(root.foreground, 0.08) : "transparent"
                     }
-                    Text {
-                        Layout.fillWidth: true
-                        text: modelData.title === modelData.pattern ? modelData.label : modelData.title
-                        textFormat: Text.PlainText
-                        color: root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                        elide: Text.ElideRight
+                    contentItem: Column {
+                        leftPadding: Style.space(25)
+                        spacing: Style.spacing.xxs
+                        Text {
+                            width: parent.width - parent.leftPadding
+                            text: String(appChoice.modelData.label).replace(/ — Web App$/, "")
+                            textFormat: Text.PlainText
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.bodySmall
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            width: parent.width - parent.leftPadding
+                            text: appChoice.modelData.label === "Zoom" && appChoice.modelData.pattern.startsWith("regex:")
+                                ? "zoom.us meeting links → Zoom app" : appChoice.modelData.pattern
+                            textFormat: Text.PlainText
+                            color: Util.alpha(root.foreground, 0.73)
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            elide: Text.ElideRight
+                        }
                     }
-                    Text {
-                        Layout.preferredWidth: Style.space(100)
-                        text: modelData.kind === "webapp" ? "Web app" : "Desktop app"
-                        textFormat: Text.PlainText
-                        color: Util.alpha(root.foreground, 0.7)
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                    }
+                }
+                Text {
+                    visible: onboardingList.count === 0
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    text: "No new app rules to add."
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
                 }
             }
 
+            PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
             RowLayout {
                 Layout.fillWidth: true
                 Item { Layout.fillWidth: true }
                 Button {
                     text: root.editorBackend === "" ? "Cancel" : "Back"
-                    tooltipText: root.editorBackend === "" ? "Close setup" : "Return to the web app profile scan"
+                    tooltipText: root.editorBackend === "" ? "Close setup" : "Return to default link handling"
                     focusable: true
                     onClicked: {
                         appSetupPopup.close();
-                        if (root.editorBackend !== "")
-                            webappProfilesPopup.open();
+                        if (root.editorBackend !== "") {
+                            systemSetupPopup.extras = false;
+                            systemSetupPopup.open();
+                        }
                     }
                 }
                 Button {
-                    readonly property bool hasSelection: root.onboardingCandidates.some(
-                        item => root.onboardingSelection["pattern:" + item.pattern] === item.label)
+                    readonly property int selectionCount: root.onboardingCandidates.filter(
+                        item => root.onboardingSelection["pattern:" + item.pattern] === item.label).length
+                    readonly property bool hasSelection: selectionCount > 0
                     text: root.editorBackend === ""
                         ? (hasSelection ? "Add rules and finish" : "Finish")
-                        : (hasSelection ? "Add rules and continue" : "Next")
+                        : (hasSelection ? "Add " + selectionCount + (selectionCount === 1 ? " rule" : " rules") : "Next")
                     tooltipText: hasSelection
                         ? (root.autosave ? "Add rules for the checked apps and save automatically"
                             : "Add rules for the checked apps to the draft")
@@ -3321,10 +3391,14 @@ Item {
 
     Controls.Popup {
         id: systemSetupPopup
+        property bool extras: false
+        closePolicy: Controls.Popup.CloseOnEscape
         anchors.centerIn: parent
         width: Math.min(root.width - Style.space(24), Style.space(560))
-        padding: Style.space(14)
+        height: Math.min(root.height - Style.space(24), Style.space(480))
+        padding: Style.space(16)
         modal: true
+        Controls.Overlay.modal: Rectangle { color: Util.alpha(root.background, 0.68) }
         focus: true
         background: BorderSurface {
             color: root.popupBackground
@@ -3333,91 +3407,240 @@ Item {
         }
         contentItem: ColumnLayout {
             spacing: Style.spacing.md
-            PanelSectionHeader {
+            SetupHeading {
                 Layout.fillWidth: true
-                text: "3 of 3 · System integration"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-            }
-            Button {
-                text: "Create profile shortcuts"
-                tooltipText: "Add missing browser profile shortcuts to the app launcher"
-                bordered: true
-                focusable: true
-                enabled: !root.profileSyncBusy && !root.busy && !root.bridgeBusy
-                onClicked: root.profileSyncRequested()
+                text: systemSetupPopup.extras ? "3 of 3 · Optional extras" : "1 of 3 · Set up link handling"
+                onCloseRequested: systemSetupPopup.close()
             }
             Text {
                 Layout.fillWidth: true
-                text: root.profileSyncBusy ? "Checking profile shortcuts…"
-                    : (root.setupProfileSyncStatus ? "Last result · " + root.setupProfileSyncStatus
-                        : "No recorded run. Shortcuts open individual browser profiles from the app launcher.")
+                text: systemSetupPopup.extras ? "Choose the extras that fit how you work."
+                    : "Choose which links open through Browser Better Default."
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
             }
-            Button {
-                text: "Set as default link handler"
-                tooltipText: "Register Browser Picker as the system handler for web and email links"
-                bordered: true
-                focusable: true
-                enabled: !root.busy && !root.profileSyncBusy && !root.bridgeBusy
-                onClicked: root.setupRequested(false)
-            }
-            Text {
+            PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+            Controls.ScrollView {
+                id: systemScroll
                 Layout.fillWidth: true
-                text: root.defaultHandlerStatus || "No recorded run. System link routing works without a browser extension."
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
+                Layout.fillHeight: true
+                Layout.minimumHeight: 0
+                clip: true
+                contentWidth: Math.max(0, availableWidth - Style.space(14))
+                Controls.ScrollBar.vertical: Controls.ScrollBar {
+                    anchors.top: systemScroll.top
+                    anchors.right: systemScroll.right
+                    anchors.bottom: systemScroll.bottom
+                    policy: systemScroll.contentHeight > systemScroll.availableHeight
+                        ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
+                }
+                ColumnLayout {
+                    id: systemActions
+                    width: systemScroll.contentWidth
+                    spacing: Style.spacing.md
+
+                    SetupAction {
+                        Layout.fillWidth: true
+                        visible: !systemSetupPopup.extras
+                        title: "Open links with Browser Better Default"
+                        description: "Set Browser Better Default as your default so most links you click go through it. If no rule matches, it asks where to open the link unless you’ve chosen a default profile."
+                        actionText: "Set as default"
+                        status: root.defaultHandlerStatus
+                        failed: root.defaultHandlerFailed
+                        onActivated: root.setupRequested(false)
+                    }
+                    PanelSeparator { visible: !systemSetupPopup.extras; Layout.fillWidth: true; foreground: root.foreground }
+                    SetupAction {
+                        Layout.fillWidth: true
+                        visible: !systemSetupPopup.extras
+                        title: "Open links from web apps"
+                        description: "When you click a link in a Chromium web app like WhatsApp, the extension sends it to Browser Better Default so your rules decide where it opens. Without the extension, the link can open in the web app’s current browser profile."
+                        actionText: "Install extension"
+                        helpUrl: root.docsUrl + "/blob/HEAD/docs/BRIDGE.md"
+                        status: root.bridgeStatus
+                        failed: !root.bridgeBusy && root.bridgeFailed
+                        onActivated: root.bridgeInstallRequested()
+                    }
+                    SetupAction {
+                        Layout.fillWidth: true
+                        visible: systemSetupPopup.extras
+                        title: "Web app profiles"
+                        description: "By default if you have multiple chrome profiles in omarchy webapps will just open \"random\" profiles each time you open that web app based on what profile you had open last. Keep an Omarchy web app in the browser profile that has the right account."
+                        actionText: "Review profiles"
+                        onActivated: {
+                            webappProfilesPopup.guided = true
+                            webappProfilesPopup.open()
+                            webappProfilesPopup.scan()
+                        }
+                    }
+                    PanelSeparator { visible: systemSetupPopup.extras; Layout.fillWidth: true; foreground: root.foreground }
+                    SetupAction {
+                        Layout.fillWidth: true
+                        visible: systemSetupPopup.extras
+                        title: "Profile shortcuts"
+                        description: "Add shortcuts for your browser profiles so you can launch Work or Personal right from the app menu (Super+Space)."
+                        actionText: "Create shortcuts"
+                        status: root.profileSyncBusy ? "Creating profile shortcuts…"
+                            : (root.setupProfileSyncStatus ? "Last run · " + root.setupProfileSyncStatus : "")
+                        failed: !root.profileSyncBusy && root.setupProfileSyncFailed
+                        onActivated: root.profileSyncRequested()
+                    }
+
+                }
             }
-            Button {
-                text: "Install web app bridge"
-                tooltipText: "Install the extension and native host for links clicked inside Chromium web apps"
-                bordered: true
-                focusable: true
-                enabled: !root.busy && !root.profileSyncBusy && !root.bridgeBusy
-                onClicked: root.bridgeInstallRequested()
-            }
-            Text {
-                Layout.fillWidth: true
-                text: root.bridgeStatus || "No recorded run. The optional bridge adds an extension and native host and updates browser flags."
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-            }
+            PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
             RowLayout {
                 Layout.fillWidth: true
-                Button {
-                    text: "Bridge setup guide"
-                    tooltipText: "Open installation instructions for the optional Chromium web app bridge"
-                    focusable: true
-                    onClicked: Qt.openUrlExternally("https://github.com/dataforxyz/browser-better-default/blob/HEAD/docs/BRIDGE.md")
-                }
                 Item { Layout.fillWidth: true }
                 Button {
+                    visible: systemSetupPopup.extras
                     text: "Back"
-                    tooltipText: "Review recommended app rules"
                     focusable: true
                     onClicked: {
-                        systemSetupPopup.close();
-                        appSetupPopup.open();
+                        systemSetupPopup.close()
+                        appSetupPopup.open()
                     }
                 }
                 Button {
-                    text: "Finish"
-                    tooltipText: "Close recommended setup"
+                    text: systemSetupPopup.extras ? "Finish" : "Next"
+                    selected: true
+                    tooltipText: systemSetupPopup.extras ? "Close recommended setup" : "Continue to recommended app rules"
                     bordered: true
                     focusable: true
-                    onClicked: root.finishRecommendedSetup()
+                    onClicked: {
+                        if (systemSetupPopup.extras) {
+                            root.finishRecommendedSetup()
+                        } else {
+                            systemSetupPopup.close()
+                            appSetupPopup.open()
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    component SetupHeading: RowLayout {
+        id: heading
+        required property string text
+        signal closeRequested()
+
+        Text {
+            Layout.fillWidth: true
+            text: heading.text
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.heading
+            font.bold: true
+        }
+        Button {
+            text: "×"
+            tooltipText: "Close setup"
+            Accessible.name: "Close setup"
+            focusable: true
+            onClicked: heading.closeRequested()
+        }
+    }
+
+    component SetupHelp: Button {
+        required property string url
+        bordered: false
+        focusable: true
+        foreground: root.accent
+        horizontalPadding: 0
+        verticalPadding: Style.spacing.xxs
+        Accessible.role: Accessible.Link
+        Accessible.name: text
+        fontSize: Style.font.bodySmall
+        onClicked: Qt.openUrlExternally(url)
+    }
+
+    component SetupAction: ColumnLayout {
+        id: action
+        required property string title
+        required property string description
+        required property string actionText
+        property string helpUrl: ""
+        property string status: ""
+        property bool failed: false
+        property bool showDetails: false
+        readonly property int detailStart: status.indexOf("\n")
+        signal activated()
+        onStatusChanged: showDetails = false
+        spacing: Style.spacing.xs
+
+        RowLayout {
+            Layout.fillWidth: true
+            Text {
+                Layout.fillWidth: true
+                text: action.title
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+            }
+            Button {
+                text: action.failed ? "Retry" : action.actionText
+                Accessible.name: action.failed ? "Retry " + action.title : action.actionText
+                fontSize: Style.font.caption
+                bordered: true
+                focusable: true
+                enabled: !root.busy && !root.profileSyncBusy && !root.bridgeBusy
+                opacity: enabled ? 1 : 0.5
+                onClicked: action.activated()
+            }
+        }
+        Text {
+            Layout.fillWidth: true
+            text: action.description
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: Util.alpha(root.foreground, 0.75)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+        }
+        SetupHelp {
+            visible: action.helpUrl !== ""
+            text: "Read more about the extension ↗"
+            url: action.helpUrl
+        }
+        Text {
+            Layout.fillWidth: true
+            visible: text !== ""
+            text: action.detailStart < 0 ? action.status : action.status.slice(0, action.detailStart)
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: action.failed ? root.disabledTint : root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+        }
+        Button {
+            visible: action.detailStart >= 0
+            text: action.showDetails ? "Hide details" : "Show details"
+            foreground: root.accent
+            horizontalPadding: 0
+            fontSize: Style.font.caption
+            focusable: true
+            onClicked: action.showDetails = !action.showDetails
+        }
+        TextEdit {
+            Layout.fillWidth: true
+            visible: action.showDetails && action.detailStart >= 0
+            text: visible ? action.status.slice(action.detailStart + 1) : ""
+            textFormat: TextEdit.PlainText
+            readOnly: true
+            selectByMouse: true
+            wrapMode: TextEdit.Wrap
+            color: root.disabledTint
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
         }
     }
 
