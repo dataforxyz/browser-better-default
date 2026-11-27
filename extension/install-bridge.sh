@@ -108,15 +108,6 @@ done
 
 cat <<EOF
 
-Done — the bridge auto-loads via the flags file(s) above, no manual extension install.
-Restart any open browser / web-app windows so they pick up the new flag (already-running
-windows won't have it until relaunched).
-
-  • Verify:  open chrome://extensions in a web-app window — you should see the bridge,
-             ID $EXT_ID
-  • Test:    click a link inside a web app (e.g. WhatsApp) — browser-picker should appear
-  • Log:     ~/.cache/browser-picker/bridge.log
-
-Manual fallback (if you'd rather not use the flags file): chrome://extensions ->
-Developer mode -> Load unpacked -> $EXTDIR
+Restart the browser and web apps, then check chrome://extensions for the bridge (ID $EXT_ID).
+If your browser ignores --load-extension, enable Developer mode and Load unpacked: $EXTDIR
 EOF

@@ -1,0 +1,909 @@
+#!/usr/bin/env python3
+"""browser-picker-editor-data — GUI-free JSON data backend for the rules editor.
+
+Provides compact JSON state over stdout for native QML (or other) frontends without any
+GTK/GLib dependency.
+
+CLI:
+  browser-picker-editor-data load
+  browser-picker-editor-data rescan
+  browser-picker-editor-data save '<json>'
+
+Save payload JSON:
+  {"rules":[{"enabled":bool,"pattern":str,"label":str,"private":bool}],
+   "fallback":str|null,
+   "revision":str}
+
+Stdout JSON for all successful commands:
+  {"rules":[{"enabled":bool,"pattern":str,"label":str,"private":bool}],
+   "fallback":str|null,
+   "browsers":[str],
+   "apps":[str],
+   "suggestions":[{"pattern":str,"label":str,"private":bool,"title":str,"reason":str}],
+   "revision":str}
+"""
+from collections import Counter
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+
+BROWSERS_HEADER = (
+    "# Browsers + profiles offered by the picker.\n"
+    "# Format: Label|||command   (command may contain quotes; URL appended)\n"
+)
+RULES_HEADER = (
+    '# Smart-default rules — managed by the "Browser Better Default" app (browser-picker-rules).\n'
+    "# Format: enabled|||pattern|||label[|||private]   (enabled/private 1/0; plain/glob/regex pattern)\n"
+)
+MISSING_REVISION = "missing"
+DELIMITER = "|||"
+_FORBIDDEN_UNICODE_BREAKS = frozenset(("\u0085", "\u2028", "\u2029"))
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_INVALID = 2
+EXIT_CONFLICT = 3
+
+_HELPER_CACHE = {}
+
+
+class ValidationError(Exception):
+    """Raised when CLI arguments, JSON payload, or rule values are invalid."""
+
+
+class RevisionConflictError(Exception):
+    """Raised when rules.conf changed on disk since the editor loaded it."""
+
+
+def config_dir():
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(xdg, "browser-picker")
+
+
+def browsers_path():
+    return os.path.join(config_dir(), "browsers.conf")
+
+
+def rules_path():
+    return os.path.join(config_dir(), "rules.conf")
+
+
+def _load_helper(name):
+    """Import a sibling pure-Python helper from this checkout, or find it on PATH."""
+    cands = [
+        os.path.join(os.path.dirname(os.path.realpath(__file__)), name),
+        shutil.which(name),
+    ]
+    for path in cands:
+        if not path or not os.path.isfile(path):
+            continue
+        real = os.path.realpath(path)
+        mod = _HELPER_CACHE.get((name, real))
+        if mod is not None:
+            return mod
+        prev_no_bytecode = sys.dont_write_bytecode
+        try:
+            sys.dont_write_bytecode = True
+            loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), path)
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(mod)
+            _HELPER_CACHE[(name, real)] = mod
+            return mod
+        except Exception:
+            continue
+        finally:
+            sys.dont_write_bytecode = prev_no_bytecode
+    return None
+
+
+def _apps_module():
+    mod = _load_helper("browser-picker-apps")
+    if mod is not None:
+        conf = config_dir()
+        mod.CONF = conf
+        mod.APPS_FILE = os.path.join(conf, "apps.conf")
+        mod.SETTINGS_FILE = os.path.join(conf, "settings.conf")
+    return mod
+
+
+def _recommend_module():
+    mod = _load_helper("browser-picker-recommend")
+    if mod is not None:
+        conf = config_dir()
+        mod.CONF = conf
+        mod.STORE = os.path.join(conf, "history.json")
+        mod.SETTINGS = os.path.join(conf, "settings.conf")
+        mod.RULES_FILE = os.path.join(conf, "rules.conf")
+        mod.BROWSERS_FILE = os.path.join(conf, "browsers.conf")
+    return mod
+
+
+def _profiles_module():
+    mod = _load_helper("browser-picker-profiles")
+    if mod is not None:
+        conf = config_dir()
+        mod.CONF = conf
+        mod.BROWSERS = os.path.join(conf, "browsers.conf")
+        mod.HOME = os.path.expanduser("~")
+    return mod
+
+
+def read_lines(path):
+    if not os.path.exists(path):
+        return []
+    out = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#") or DELIMITER not in s:
+                continue
+            out.append(s)
+    return out
+
+
+def _hash_bytes(raw):
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def parse_rules_text(text):
+    rules = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or DELIMITER not in s:
+            continue
+        parts = s.split(DELIMITER)
+        if len(parts) >= 3:
+            en, pat, lbl = parts[0], parts[1], parts[2]
+            priv = len(parts) > 3 and parts[3] == "1"
+            rules.append(
+                {
+                    "enabled": en == "1",
+                    "pattern": pat,
+                    "label": lbl,
+                    "private": priv,
+                }
+            )
+    return rules
+
+
+def read_rules_snapshot(path):
+    """Read rules.conf once and return (parsed_rules, revision)."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return [], MISSING_REVISION
+    revision = _hash_bytes(raw)
+    text = raw.decode("utf-8", errors="replace")
+    return parse_rules_text(text), revision
+
+
+def split_default_rule(rules):
+    """Split a trailing non-private catch-all `*` rule into `fallback`.
+
+    A private catch-all (`1|||*|||label|||1`), disabled catch-all (`0|||*|||label`),
+    or non-trailing catch-all stays in `rules` so its priority and private flag are
+    never silently lost.
+    """
+    if (
+        rules
+        and rules[-1]["enabled"]
+        and rules[-1]["pattern"] == "*"
+        and not rules[-1]["private"]
+    ):
+        return list(rules[:-1]), rules[-1]["label"]
+    return list(rules), None
+
+
+def format_rule_line(enabled, pattern, label, private=False):
+    en = "1" if enabled else "0"
+    if private:
+        return f"{en}{DELIMITER}{pattern}{DELIMITER}{label}{DELIMITER}1"
+    return f"{en}{DELIMITER}{pattern}{DELIMITER}{label}"
+
+
+def format_rules_file(rules, fallback):
+    lines = [RULES_HEADER.rstrip("\n")]
+    for rule in rules:
+        lines.append(
+            format_rule_line(
+                rule["enabled"],
+                rule["pattern"],
+                rule["label"],
+                rule["private"],
+            )
+        )
+    if fallback is not None:
+        lines.append(format_rule_line(True, "*", fallback, False))
+    return "\n".join(lines) + "\n"
+
+
+def load_browser_labels():
+    seen = set()
+    out = []
+    for line in read_lines(browsers_path()):
+        label = line.split(DELIMITER, 1)[0]
+        if label and label not in seen:
+            seen.add(label)
+            out.append(label)
+    return out
+
+
+def load_targets():
+    browsers = load_browser_labels()
+    browser_set = set(browsers)
+    apps_mod = _apps_module()
+    registry = None
+    app_labels = []
+    if apps_mod is not None:
+        try:
+            registry = apps_mod.build_registry()
+            app_labels = [
+                label
+                for label, _kind, _source in apps_mod.list_apps(registry)
+                if label not in browser_set
+            ]
+        except Exception:
+            registry = None
+            app_labels = []
+    return browsers, app_labels, apps_mod, registry
+
+
+def recommended_defaults(browsers, apps_mod, registry, recommender=None):
+    """Yield candidate rules with target kind, pick count, and last-use time."""
+    browser_set = set(browsers)
+    recommender = recommender if recommender is not None else _recommend_module()
+    events = []
+    learned = []
+    if recommender is not None:
+        try:
+            events = recommender.load_store().get("events", [])
+            learned = recommender.learned_defaults(events, recommender.threshold())
+        except Exception:
+            events = []
+    app_defaults = []
+    if apps_mod is not None and registry is not None:
+        try:
+            app_defaults = list(apps_mod.suggested_app_defaults(registry))
+        except Exception:
+            app_defaults = []
+    scoped_apps = {
+        label for _pattern, label, _title in app_defaults if label not in browser_set
+    }
+    for pattern, label, title in app_defaults:
+        if label in scoped_apps:
+            picks = [event for event in events if event.get("label") == label
+                     and not event.get("private")
+                     and isinstance(event.get("url"), str)
+                     and apps_mod.url_matches(pattern, event["url"])]
+            timestamp = max((event["ts"] for event in picks
+                             if type(event.get("ts")) is int), default=0)
+            yield pattern, label, False, title, "Detected app", "desktop", len(picks), timestamp, True
+
+    learned_webapps = set()
+    for pattern, label, private, count, url, timestamp in learned:
+        private = bool(private)
+        kind = "browser"
+        if label not in browser_set:
+            if (
+                label in scoped_apps
+                or private
+                or apps_mod is None
+                or registry is None
+                or not url
+            ):
+                continue
+            try:
+                matches = apps_mod.match_url(url, registry)
+            except Exception:
+                continue
+            match = next((match for match in matches if match["label"] == label), None)
+            if not match:
+                continue
+            kind = "webapp" if match["kind"] == "webapp" else "desktop"
+            if kind == "webapp":
+                learned_webapps.add(label)
+        yield pattern, label, private, pattern, f"Chosen {count} times", kind, count, timestamp, False
+
+    if apps_mod is not None and registry is not None:
+        for app in registry["webapps"]:
+            label, host = app["label"], app["host"]
+            if label in browser_set or label in learned_webapps:
+                continue
+            if any(match["label"] == label and match["kind"] == "webapp"
+                   for match in apps_mod.match_url(f"https://{host}/", registry)):
+                yield host, label, False, host, "Installed web app", "webapp", 0, 0, True
+
+
+def build_suggestions(browsers, apps_mod, registry, recommender=None):
+    out = []
+    for pattern, label, private, title, reason, kind, count, timestamp, detected in recommended_defaults(
+        browsers, apps_mod, registry, recommender
+    ):
+        out.append(
+            {
+                "pattern": pattern,
+                "label": label,
+                "private": bool(private),
+                "title": title,
+                "reason": reason,
+                "kind": kind,
+                "uses": count,
+                "last_used": timestamp,
+                "detected": detected,
+            }
+        )
+    return out
+
+
+def _compose_state(raw_rules, revision, browsers, apps, apps_mod, registry):
+    rules, fallback = split_default_rule(raw_rules)
+    suggestions = build_suggestions(browsers, apps_mod, registry)
+    return {
+        "rules": rules,
+        "fallback": fallback,
+        "browsers": browsers,
+        "apps": apps,
+        "suggestions": suggestions,
+        "revision": revision,
+        "sort": load_sort(),
+        "autosave": load_autosave(),
+        "onboarding_seen": os.path.isfile(os.path.join(config_dir(), "editor-onboarding")),
+    }
+
+
+SORT_ORDERS = ("priority", "site", "pattern", "target")
+
+
+def load_sort():
+    path = os.path.join(config_dir(), "editor-sort")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = handle.read(32).strip()
+    except OSError:
+        return "priority"
+    return value if value in SORT_ORDERS else "priority"
+
+
+def load_autosave():
+    try:
+        with open(os.path.join(config_dir(), "editor-autosave"), encoding="utf-8") as handle:
+            return handle.read(16).strip() != "off"
+    except OSError:
+        return True
+
+
+def build_state():
+    raw_rules, revision = read_rules_snapshot(rules_path())
+    browsers, apps, apps_mod, registry = load_targets()
+    return _compose_state(raw_rules, revision, browsers, apps, apps_mod, registry)
+
+
+@contextmanager
+def _file_lock(lock_path):
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def atomic_write_text(path, content):
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        mode = 0o644
+    fd, tmp_path = tempfile.mkstemp(
+        dir=directory,
+        prefix=f".{os.path.basename(path)}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _has_forbidden_chars(text):
+    if DELIMITER in text:
+        return True
+    for ch in text:
+        code = ord(ch)
+        if code < 0x20 or code == 0x7F or ch in _FORBIDDEN_UNICODE_BREAKS:
+            return True
+    return False
+
+
+def _validate_text_field(value, description, *, trim=False):
+    if not isinstance(value, str):
+        raise ValidationError(f"{description} must be a string.")
+    if _has_forbidden_chars(value):
+        raise ValidationError(
+            f"{description} contains forbidden control characters or '{DELIMITER}'."
+        )
+    if trim:
+        value = value.strip()
+    elif value != value.strip():
+        raise ValidationError(
+            f"{description} cannot have leading or trailing whitespace."
+        )
+    if not value:
+        raise ValidationError(f"{description} cannot be empty.")
+    if value.endswith("|"):
+        raise ValidationError(f"{description} cannot end with '|'.")
+    return value
+
+
+def validate_save_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValidationError("Save payload must be a JSON object.")
+
+    raw_rules = payload.get("rules")
+    if not isinstance(raw_rules, list):
+        raise ValidationError("Payload 'rules' must be a list.")
+
+    revision = payload.get("revision")
+    if not isinstance(revision, str) or not revision:
+        raise ValidationError("Payload 'revision' must be a non-empty string.")
+
+    fallback = payload.get("fallback", None)
+    if fallback is not None:
+        fallback = _validate_text_field(fallback, "Fallback label", trim=False)
+
+    validated_rules = []
+    for idx, item in enumerate(raw_rules, 1):
+        if not isinstance(item, dict):
+            raise ValidationError(f"Rule {idx} must be an object.")
+        enabled = item.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValidationError(f"Rule {idx} 'enabled' must be a boolean.")
+        private = item.get("private")
+        if not isinstance(private, bool):
+            raise ValidationError(f"Rule {idx} 'private' must be a boolean.")
+        pattern = _validate_text_field(
+            item.get("pattern"), f"Rule {idx} 'pattern'", trim=True
+        )
+        label = _validate_text_field(
+            item.get("label"), f"Rule {idx} 'label'", trim=False
+        )
+        if pattern.startswith("regex:"):
+            # Match the router's Bash ERE dialect; Python/JS accept different syntax.
+            checked = subprocess.run(
+                ["bash", "-c", '[[ "" =~ $1 ]]', "validate-pattern", pattern[6:]],
+                capture_output=True, timeout=3,
+            )
+            if checked.returncode == 2:
+                raise ValidationError(f"Rule {idx} has an invalid regex pattern.")
+
+        validated_rules.append(
+            {
+                "enabled": enabled,
+                "pattern": pattern,
+                "label": label,
+                "private": private,
+            }
+        )
+
+    return validated_rules, fallback, revision
+
+
+def validate_app_private_policy(
+    rules, fallback, existing_rules, existing_fallback, app_labels
+):
+    """Enforce the same local-app/private policy as browser-picker-rules.
+
+    - Local apps do not support private windows: reject newly added private flags
+      targeting a local app, while preserving any existing private flags already
+      in rules.conf so they are never silently dropped.
+    - Local apps cannot be selected as a new catch-all fallback, while preserving
+      an existing fallback if already present.
+    """
+    app_set = set(app_labels)
+    if fallback is not None and fallback in app_set and fallback != existing_fallback:
+        raise ValidationError(
+            f"Fallback '{fallback}' is a local app; choose a browser profile or Always ask (show the menu)."
+        )
+
+    existing_private_counts = Counter(
+        rule["label"] for rule in existing_rules if rule["private"]
+    )
+    seen_private_counts = Counter()
+    for idx, rule in enumerate(rules, 1):
+        if rule["private"] and rule["label"] in app_set:
+            label = rule["label"]
+            seen_private_counts[label] += 1
+            if seen_private_counts[label] > existing_private_counts[label]:
+                raise ValidationError(
+                    f"Rule {idx}: local app '{label}' does not support private windows."
+                )
+
+
+def _normcmd(cmd):
+    return " ".join(cmd.replace('"', "").split())
+
+
+def cmd_load():
+    return build_state()
+
+
+def cmd_rescan():
+    profiles_mod = _profiles_module()
+    if profiles_mod is None:
+        raise RuntimeError("browser-picker-profiles helper not found.")
+
+    normcmd = getattr(profiles_mod, "normcmd", _normcmd)
+    conf = config_dir()
+    bpath = browsers_path()
+    lock_path = os.path.join(conf, ".browsers.lock")
+
+    with _file_lock(lock_path):
+        existing = read_lines(bpath)
+        seen = {
+            normcmd(line.split(DELIMITER, 1)[1])
+            for line in existing
+            if DELIMITER in line
+        }
+        lines = list(existing)
+        added = 0
+        for label, cmd in profiles_mod.discover_browsers():
+            if _has_forbidden_chars(label) or _has_forbidden_chars(cmd):
+                continue
+            key = normcmd(cmd)
+            if key in seen:
+                continue
+            lines.append(f"{label}{DELIMITER}{cmd}")
+            seen.add(key)
+            added += 1
+        if added or not os.path.exists(bpath):
+            content = BROWSERS_HEADER
+            if lines:
+                content += "\n".join(lines) + "\n"
+            atomic_write_text(bpath, content)
+
+    return build_state()
+
+
+def cmd_save(raw_json):
+    try:
+        payload = json.loads(raw_json)
+    except ValueError as exc:
+        raise ValidationError(f"Invalid JSON payload: {exc}") from exc
+
+    rules, fallback, expected_revision = validate_save_payload(payload)
+
+    conf = config_dir()
+    rpath = rules_path()
+
+    # Reject a stale revision before creating CONF if the directory does not exist yet.
+    if not os.path.exists(rpath) and expected_revision != MISSING_REVISION:
+        raise RevisionConflictError(
+            "Rules changed on disk since they were loaded; reload and try again."
+        )
+
+    browsers, apps, apps_mod, registry = load_targets()
+    lock_path = os.path.join(conf, ".rules.lock")
+
+    with _file_lock(lock_path):
+        existing_raw_rules, current_revision = read_rules_snapshot(rpath)
+        if current_revision != expected_revision:
+            raise RevisionConflictError(
+                "Rules changed on disk since they were loaded; reload and try again."
+            )
+        existing_rules, existing_fallback = split_default_rule(existing_raw_rules)
+        validate_app_private_policy(
+            rules, fallback, existing_rules, existing_fallback, apps
+        )
+        content = format_rules_file(rules, fallback)
+        atomic_write_text(rpath, content)
+        new_raw_rules = parse_rules_text(content)
+        new_revision = _hash_bytes(content.encode("utf-8"))
+
+    return _compose_state(new_raw_rules, new_revision, browsers, apps, apps_mod, registry)
+
+
+def omarchy_webapp_browser(apps):
+    if not shutil.which("omarchy-cmd-default-browser"):
+        return ""
+    desktop = subprocess.run(
+        ["omarchy-cmd-default-browser"], capture_output=True, text=True, timeout=3,
+    ).stdout.strip()
+    if not desktop.startswith(("google-chrome", "brave", "microsoft-edge",
+                               "opera", "vivaldi", "helium")):
+        desktop = "chromium.desktop"
+    if os.path.basename(desktop) != desktop:
+        return ""
+    for directory in apps.desktop_app_dirs():
+        path = Path(directory) / desktop
+        if path.is_file():
+            entry = apps._read_desktop_entry_section(path) or {}
+            return entry.get("Exec", "").split(" ", 1)[0]
+    return ""
+
+
+def webapp_profiles(selection=None):
+    apps = _apps_module()
+    profiles = _profiles_module()
+    shortcuts = _load_helper("browser_picker_profile_shortcuts.py")
+    if not all((apps, profiles, shortcuts)):
+        raise RuntimeError("Web app profile helpers are unavailable.")
+
+    applications = Path(os.environ.get("XDG_DATA_HOME") or
+                        os.path.expanduser("~/.local/share")) / "applications"
+    entries, _handlers = apps.scan_desktop_entries(
+        app_dirs=[str(applications)], mimeapps_defaults={},
+    )
+    aliases = {"brave-browser": "brave",
+               "google-chrome": "google-chrome-stable", "chromium-browser": "chromium",
+               "microsoft-edge": "microsoft-edge-stable"}
+    by_browser = {}
+    for label, command in profiles.discover_browsers(os.environ.get("XDG_CONFIG_HOME")):
+        args = shlex.split(command)
+        if len(args) == 2 and args[1].startswith("--profile-directory="):
+            directory = args[1].split("=", 1)[1]
+            if directory and not _has_forbidden_chars(directory):
+                by_browser.setdefault(args[0], []).append({"label": label, "value": directory})
+
+    wrapper_browser = None
+    results = []
+    for entry in entries.values():
+        if selection is not None and entry["id"] != selection["id"]:
+            continue
+        tokens = entry.get("tokens") or []
+        if not tokens or not apps._parse_webapp_entry(entry):
+            continue
+        if any(arg.split("=", 1)[0] in ("--profile-directory", "--user-data-dir")
+               for arg in tokens[1:]):
+            continue
+        wrapped = os.path.basename(tokens[0]) == "omarchy-launch-webapp"
+        executable = tokens[0]
+        if wrapped:
+            if len(tokens) < 2 or apps.parse_http_url(tokens[1]) is None:
+                continue
+            if wrapper_browser is None:
+                wrapper_browser = omarchy_webapp_browser(apps)
+            executable = wrapper_browser
+        browser = os.path.basename(executable)
+        if browser.startswith("google-chrome") and (
+            os.environ.get("CHROME_USER_DATA_DIR") or os.environ.get("CHROME_CONFIG_HOME")
+        ):
+            continue
+        options = by_browser.get(aliases.get(browser, browser), [])
+        resolved = shutil.which(executable) if executable else None
+        if len(options) < 2 or not resolved:
+            continue
+
+        path = Path(entry["path"])
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+                continue
+            raw = path.read_bytes()
+            content = raw.decode("utf-8")
+        except (OSError, UnicodeError):
+            continue
+
+        # Preserve all other desktop groups and metadata.
+        lines = content.splitlines(keepends=True)
+        section = ""
+        exec_lines = []
+        for index, line in enumerate(lines):
+            if line.strip().startswith("["):
+                section = line.strip()
+            if section == "[Desktop Entry]" and line.startswith("Exec="):
+                exec_lines.append(index)
+        if len(exec_lines) != 1:
+            continue
+        index = exec_lines[0]
+        match = re.fullmatch(r'Exec=("[^"]+"|[^ \t"]+)([ \t]+[^\r\n]*)(\r?\n)?', lines[index])
+        if not match or apps.parse_exec_tokens(match[1] + match[2]) != tokens:
+            continue
+
+        command, arguments = match[1], match[2]
+        if wrapped:
+            url = re.match(r'\s+("[^"]+"|[^\s"]+)(?=\s|$)', arguments)
+            if not url or apps.parse_exec_tokens(url[1]) != tokens[1:2]:
+                continue
+            command = shortcuts.desktop_exec_arg(resolved)
+            # Keep URL escapes and the original argument tail.
+            url_token = url[1]
+            app_arg = ('"--app=' + url_token[1:]) if url_token.startswith('"') else "--app=" + url_token
+            arguments = " " + app_arg + arguments[url.end():]
+
+        revision = _hash_bytes(raw + b"\0" + os.fsencode(resolved))
+        if selection is None:
+            results.append({"id": entry["id"], "name": entry["name"],
+                            "revision": revision, "profiles": options})
+            continue
+        if revision != selection["revision"]:
+            break
+        profile = selection["profile"]
+        if profile not in {option["value"] for option in options}:
+            raise ValidationError("Choose a profile from the current scan.")
+        flag = shortcuts.desktop_exec_arg("--profile-directory=" + profile)
+        lines[index] = f"Exec={command} {flag}{arguments}{match[3] or ''}"
+        current = path.lstat()
+        if (current.st_dev, current.st_ino, current.st_uid, current.st_mode) != (
+            metadata.st_dev, metadata.st_ino, metadata.st_uid, metadata.st_mode
+        ) or path.read_bytes() != raw:
+            break
+        atomic_write_text(path, "".join(lines))
+        return {"pinned": entry["id"]}
+
+    if selection is not None:
+        raise RevisionConflictError("The launcher or its browser changed. Scan again.")
+    return {"apps": sorted(results, key=lambda row: row["name"].casefold())}
+
+
+def _dump_compact_json(data):
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    use_ascii = encoding.lower() in ("ascii", "ansi_x3.4-1968")
+    return json.dumps(data, separators=(",", ":"), ensure_ascii=use_ascii)
+
+
+def trace_url(raw_json):
+    payload = json.loads(raw_json)
+    url = payload["url"]
+    parsed = urllib.parse.urlsplit(url)
+    if not ((parsed.scheme in ("http", "https") and parsed.hostname)
+            or (parsed.scheme == "mailto" and parsed.path)):
+        raise ValidationError("Enter a full link such as https://example.com or mailto:name@example.com.")
+
+    rules = list(payload["rules"])
+    fallback = payload.get("fallback")
+    if fallback:
+        rules.append({"enabled": True, "pattern": "*", "label": fallback, "private": False})
+    patterns = [rule["pattern"] for rule in rules]
+    if "\0" in url or any("\0" in pattern for pattern in patterns):
+        raise ValidationError("A URL or pattern contains a null character.")
+    picker = os.path.join(os.path.dirname(os.path.realpath(__file__)), "browser-picker")
+    script = """
+source "$1"
+IFS= read -r -d '' url
+i=0
+while IFS= read -r -d '' pattern; do
+    if [[ -n "$pattern" ]] && matches "$pattern" "$url"; then
+        printf '%s\\n' "$i"
+    fi
+    ((i += 1))
+done
+"""
+    matched = subprocess.run(
+        ["bash", "-c", script, "trace-url", picker],
+        input=url + "\0" + "".join(pattern + "\0" for pattern in patterns),
+        text=True, capture_output=True, check=True, timeout=3,
+    )
+    browsers, _apps, apps_mod, registry = load_targets()
+    matches = []
+    outcome = "picker"
+    stopped = False
+    for index in map(int, matched.stdout.splitlines()):
+        rule = rules[index]
+        label = rule["label"]
+        if not rule["enabled"]:
+            status = "disabled"
+        elif stopped:
+            status = "later"
+        else:
+            if label in browsers:
+                target = "match"
+            elif apps_mod and not rule["private"]:
+                target, _entry = apps_mod.resolve_for_label(label, url, registry)
+            else:
+                target = "unknown"
+            if target == "match":
+                outcome, status, stopped = "rule", "winner", True
+            elif target == "no_url":
+                status = "unsupported"
+            else:
+                status, stopped = "unavailable", True
+        matches.append({**rule, "priority": index + 1, "status": status,
+                        "fallback": bool(fallback and index == len(rules) - 1)})
+    return {"matches": matches, "outcome": outcome}
+
+
+def main(argv):
+    try:
+        if not argv:
+            raise ValidationError(
+                "Usage: browser-picker-editor-data <load|rescan|save <json>>"
+            )
+        cmd = argv[0]
+        if cmd == "load":
+            if len(argv) != 1:
+                raise ValidationError("Usage: browser-picker-editor-data load")
+            result = cmd_load()
+        elif cmd == "rescan":
+            if len(argv) != 1:
+                raise ValidationError("Usage: browser-picker-editor-data rescan")
+            result = cmd_rescan()
+        elif cmd == "save":
+            if len(argv) != 2:
+                raise ValidationError("Usage: browser-picker-editor-data save <json>")
+            result = cmd_save(argv[1])
+        elif cmd == "sort":
+            if len(argv) != 2 or argv[1] not in SORT_ORDERS:
+                raise ValidationError("Invalid editor sort order.")
+            atomic_write_text(os.path.join(config_dir(), "editor-sort"), argv[1] + "\n")
+            result = {"sort": argv[1]}
+        elif cmd == "autosave":
+            if len(argv) != 2 or argv[1] not in ("on", "off"):
+                raise ValidationError("Autosave must be on or off.")
+            atomic_write_text(os.path.join(config_dir(), "editor-autosave"), argv[1] + "\n")
+            result = {"autosave": argv[1] == "on"}
+        elif cmd == "profile-shortcuts":
+            profiles_mod = _profiles_module()
+            if profiles_mod is None:
+                raise RuntimeError("Browser profiles helper not found.")
+            if len(argv) == 2 and argv[1] in ("on", "off"):
+                path = os.path.join(config_dir(), profiles_mod.SHORTCUTS_PREF)
+                atomic_write_text(path, argv[1] + "\n")
+            elif len(argv) != 2 or argv[1] not in ("status", "sync"):
+                raise ValidationError("Profile shortcuts require status, on, off, or sync.")
+            result = {"enabled": profiles_mod.launcher_sync_enabled()}
+            if argv[1] == "sync":
+                shortcuts = _load_helper("browser_picker_profile_shortcuts.py")
+                if shortcuts is None:
+                    raise RuntimeError("Profile shortcuts helper not found.")
+                result["added"] = shortcuts.sync()
+        elif cmd == "onboarding" and len(argv) == 1:
+            atomic_write_text(os.path.join(config_dir(), "editor-onboarding"), "seen\n")
+            result = {"onboarding_seen": True}
+        elif cmd == "scan-webapp-profiles" and len(argv) == 1:
+            result = webapp_profiles()
+        elif cmd == "pin-webapp-profile" and len(argv) == 2:
+            selection = json.loads(argv[1])
+            if not isinstance(selection, dict) or any(
+                not isinstance(selection.get(key), str) for key in ("id", "revision", "profile")
+            ):
+                raise ValidationError("Invalid web app profile selection.")
+            with _file_lock(os.path.join(config_dir(), ".webapp-profiles.lock")):
+                result = webapp_profiles(selection)
+        elif cmd == "trace" and len(argv) == 1:
+            result = trace_url(sys.stdin.readline())
+        else:
+            raise ValidationError(
+                f"Unknown command '{cmd}'."
+            )
+    except ValidationError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return EXIT_INVALID
+    except RevisionConflictError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return EXIT_CONFLICT
+    except Exception as exc:
+        sys.stderr.write(f"Failed to process browser-picker rules: {exc}\n")
+        return EXIT_ERROR
+
+    sys.stdout.write(_dump_compact_json(result) + "\n")
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

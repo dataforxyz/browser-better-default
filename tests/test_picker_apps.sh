@@ -222,4 +222,29 @@ if grep -Fq "⭐" "$MENU_SEEN"; then
   exit 1
 fi
 
+# 13) Detected Zoom offers a meeting default with no history. A saved rule
+# applies across regions and leaves Zoom's ordinary pages alone.
+cat > "$XDG_DATA_HOME/applications/Zoom.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Zoom
+Exec=$TMP/mockbin/mock-t3 %U
+MimeType=x-scheme-handler/zoommtg;
+EOF
+rm -f "$XDG_CONFIG_HOME/browser-picker/history.json"
+export BROWSER_PICKER_MENU="tee '$MENU_SEEN' >/dev/null; printf '%s\n' '⭐  Always open Zoom meetings in Zoom'"
+"$ROOT/bin/browser-picker" "https://us02web.zoom.us/j/123456789?pwd=test"
+wait_for_log "T3:zoommtg://zoom.us/join?action=join&confno=123456789&pwd=test"
+grep -Fq "⭐  Always open Zoom meetings in Zoom" "$MENU_SEEN"
+printf '1|||*|||Firefox — default\n' >> "$XDG_CONFIG_HOME/browser-picker/rules.conf"
+export BROWSER_PICKER_MENU="echo SHOULD_NOT_RUN > '$MENU_SEEN'"
+: > "$MENU_SEEN"
+"$ROOT/bin/browser-picker" "https://us06web.zoom.us/wc/join/987654321"
+wait_for_log "T3:zoommtg://zoom.us/join?action=join&confno=987654321"
+"$ROOT/bin/browser-picker" "https://zoom.us/download"
+wait_for_log "BROWSER:-P default https://zoom.us/download"
+"$ROOT/bin/browser-picker" "https://zoom.us.example.invalid/j/123456789"
+wait_for_log "BROWSER:-P default https://zoom.us.example.invalid/j/123456789"
+[ ! -s "$MENU_SEEN" ]
+
 echo "test_picker_apps.sh: all passed"

@@ -2,7 +2,7 @@
 # Format:  Label|||command      (command may contain quotes; the URL is appended)
 # Lines starting with # and blank lines are ignored.
 #
-# Tip: open the "Browser Picker Rules" app and click "⟳ Rescan profiles" to
+# Tip: open the "Browser Better Default" app and click "Settings → Rescan targets" to
 # auto-detect every installed browser and profile instead of editing by hand.
 Chromium — Default|||chromium --profile-directory=Default
 Firefox — default|||firefox -P "default"

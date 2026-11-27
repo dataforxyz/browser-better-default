@@ -23,8 +23,10 @@ echo "== python compile =="
 python3 -m py_compile \
   "$ROOT/bin/browser-picker-apps" \
   "$ROOT/bin/browser-picker-rules" \
+  "$ROOT/bin/browser-picker-editor-data" \
   "$ROOT/bin/browser-picker-recommend" \
   "$ROOT/bin/browser-picker-profiles" \
+  "$ROOT/bin/browser_picker_profile_shortcuts.py" \
   "$ROOT/bin/browser-picker-host"
 
 echo "== bash unit tests =="
@@ -34,6 +36,11 @@ bash "$HERE/test_picker_apps.sh"
 echo "== python unit tests =="
 python3 "$HERE/test_apps.py"
 python3 "$HERE/test_rules.py"
+python3 "$HERE/test_editor_data.py"
 python3 "$HERE/test_recommend.py"
+
+echo "== bridge tests =="
+node "$HERE/test_bridge.js"
+python3 "$HERE/test_bridge_host.py"
 
 echo "ALL TESTS PASSED"

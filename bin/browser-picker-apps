@@ -1044,6 +1044,13 @@ def _convert_spotify(url, parsed, scheme):
     return None
 
 
+ZOOM_MEETING_SAMPLE = "https://zoom.us/j/123456789"
+ZOOM_MEETING_RULE = (
+    r"regex:^https?://([A-Za-z0-9-]+\.)*zoom\.us(:[0-9]+)?"
+    r"/+(j|w|s|wc/+join)/+[0-9A-Za-z_-]{5,}([/?#]|$)"
+)
+
+
 def _convert_zoom(url, parsed, scheme):
     host = normalize_host(parsed.netloc)
     if host != "zoom.us" and not host.endswith(".zoom.us"):
@@ -1635,6 +1642,21 @@ def known_labels(registry):
     return {label for label, _kind, _source in list_apps(registry)}
 
 
+def app_default(match, url):
+    """Known cross-host link scopes for detected native apps."""
+    if match["label"] == "Zoom" and match["kind"] == "native" and url_matches(ZOOM_MEETING_RULE, url):
+        return ZOOM_MEETING_RULE, "Zoom meetings"
+    return None
+
+
+def suggested_app_defaults(registry):
+    for match in match_url(ZOOM_MEETING_SAMPLE, registry):
+        default = app_default(match, ZOOM_MEETING_SAMPLE)
+        if default:
+            pattern, title = default
+            yield pattern, match["label"], title
+
+
 def match_url(url, registry):
     """Return list of matched app dicts for `url`: [{label, kind, target, argv}]."""
     if not url:
@@ -1754,7 +1776,12 @@ def main(argv):
         if not url:
             return 2
         for m in match_url(url, reg):
-            sys.stdout.write(f"{m['label']}\t{m['kind']}\t{m['target']}\n")
+            line = f"{m['label']}\t{m['kind']}\t{m['target']}"
+            if "--with-defaults" in argv:
+                default = app_default(m, url)
+                if default:
+                    line += "\t" + "\t".join(default)
+            sys.stdout.write(line + "\n")
         return 0
 
     if cmd == "is-app":

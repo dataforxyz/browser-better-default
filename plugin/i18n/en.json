@@ -3,7 +3,20 @@
   "description": "Set Browser Picker as the default for web and email links, or refresh its launchers and command shortcuts.",
   "setDefault": "Set as default link handler",
   "refresh": "Refresh launchers",
-  "working": "Setting up Browser Picker…",
+  "rules": "Link rules",
+  "setup": "Settings",
+  "preferenceSaveFailed": "Could not save the editor preference.",
+  "profileSyncFailed": "Could not sync browser profile shortcuts.",
+  "profileSyncNone": "No missing profile shortcuts found.",
+  "profileSyncOne": "Added one profile shortcut.",
+  "profileSyncAdded": "Added %1 profile shortcuts.",
+  "settingDefaultHandler": "Setting the default link handler…",
+  "defaultHandlerSet": "Browser Picker was set as the default handler for web and email links.",
+  "defaultHandlerFailed": "Could not set the default link handler.",
+  "invalidData": "Could not read Browser Picker rules.",
+  "pendingLink": "Save or discard the link rule you started before adding another.",
+  "saveFirst": "Save or discard your edits before rescanning targets.",
+  "working": "Working…",
   "success": "Browser Picker is ready.",
-  "failure": "Browser Picker setup failed."
+  "failure": "Browser Picker could not complete the operation."
 }

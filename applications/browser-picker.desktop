@@ -2,11 +2,12 @@
 Version=1.0
 Name=Browser Picker
 GenericName=Web Browser
-Comment=Choose a browser and profile each time a link is opened
+Comment=Open links in a browser profile or app using your rules
 Exec=@BINDIR@/browser-picker %U
 StartupNotify=true
 Terminal=false
 Icon=applications-internet
 Type=Application
+NoDisplay=true
 Categories=Network;WebBrowser;
 MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/mailto;

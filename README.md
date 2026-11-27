@@ -21,7 +21,11 @@ Built for [Omarchy Quattro](https://omarchy.org) / Hyprland with its native menu
   <img src="assets/editor.png" alt="The rules editor" height="300">
 </p>
 
-<p align="center"><em>Left: pick a browser + profile per link. Right: smart-default rules editor.</em></p>
+<p align="center"><em>Choose where a link opens, then save a rule for links you want to open the same way next time.</em></p>
+
+| [Suggestions](#using-the-rules-editor) | [Settings](#recommended-setup) |
+| --- | --- |
+| ![Suggestions with links, destinations, and Add actions](assets/suggestions.png) | ![Settings with autosave, unmatched links, and setup controls](assets/settings.png) |
 
 ## Why
 
@@ -32,12 +36,13 @@ and remembers the decisions you want to make permanent.
 ## Features
 
 - **Picker on every link** — choose a browser + profile (or matching local desktop/web app) from a menu (Omarchy Quattro’s native menu, Walker, or your `BROWSER_PICKER_MENU`); the prompt shows the target URL (without query/fragment noise).
+- **Browser profiles in the app launcher** — in **Settings**, choose **Sync now** to add missing Chromium, Firefox, and Zen shortcuts. Turn on **Sync automatically** to add them during the picker's link-opening profile scan. Existing shortcuts are kept.
 - **Local apps & web apps** — automatically offers installed desktop apps when a web URL maps to them (including **T3 Code** `app.t3.codes` thread/prompt links, Spotify, Zoom, Slack, Telegram, Discord, Linear, Notion, Figma, Microsoft Teams, Steam, Signal, Matrix) plus installed Omarchy / Chromium `--app=` web apps and custom entries in `apps.conf`. Matching apps appear only for relevant URLs, work with smart-default rules and habit learning, and never clutter unrelated links.
 - **Smart defaults** — rules like `github.com/myorg/myrepo → Chromium (Work)` open
   directly, no menu. Plain text matches on **path/host boundaries** (covers a URL *and its
   child paths*, but `…/repo` won't match `…/repo-staging`); `*`/`?` = glob; `regex:` prefix
   = full regex. First match wins.
-- **In-flow rule creation** — pick *📌 Always open this site in…* from the menu and a GTK
+- **In-flow rule creation** — pick *📌 Always open this site in…* from the menu and the Omarchy
   editor opens **pre-filled** from the current URL; trim the scope, pick a profile, Save.
 - **Learns your habits** — repeat a profile for a site and the picker grows explicit
   `⭐ scope → profile` shortcuts at the top (see below). Fully **local & offline**.
@@ -46,9 +51,16 @@ and remembers the decisions you want to make permanent.
   (`--incognito` / `--private-window` chosen per browser family).
 - **Default for unmatched links** — optionally route everything that matches no rule to a
   chosen profile (a catch-all), instead of always showing the menu.
-- **GTK rules editor** — enable/disable, edit patterns, reorder priority (▲▼), set the
-  default, and ⚠ warnings for rules that point at a renamed/missing profile. New browser
-  profiles are auto-added when the picker opens (or manually with **⟳ Rescan profiles**).
+- **Omarchy rules editor** — review suggestions from detected apps and repeated
+  picks. Sort by use or recency, filter by target type, and add the rules you want.
+  For example, a detected Zoom client can
+  handle meeting links across regional Zoom hosts. Edit, enable, or reorder rules,
+  choose a fallback for unmatched links, and find rules that reference missing profiles.
+  Completed rule edits autosave by default. Turn **Autosave** off in **Settings**
+  to save changes manually. New browser profiles are auto-added when the picker
+  opens or when you rescan targets.
+- **App setup** — choose detected apps such as Zoom and installed web apps to add
+  their link rules together. Reopen it from **Settings → Run recommended setup**.
 - **Routes** `http`, `https`, and `mailto`.
 
 ## Install
@@ -59,7 +71,7 @@ and remembers the decisions you want to make permanent.
 omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable
 ```
 
-Open **Browser Better Default** from the bar's tray and click **Set as default
+Open **Browser Better Default** from the bar's tray, choose **Settings**, and click **Set as default
 link handler**. This registers Browser Picker for web and email links. If the
 tray is hidden, open the setup window from a terminal:
 
@@ -68,7 +80,7 @@ omarchy-shell shell summon browser-better-default '{}'
 ```
 
 To move an existing install into the plugin checkout, use **Refresh launchers**
-in the setup window. It repoints the commands to the plugin checkout, preserving
+under **Settings**. It repoints the commands to the plugin checkout, preserving
 your rules, profiles, and current link defaults.
 
 ### Update on Omarchy
@@ -79,7 +91,7 @@ omarchy plugin update browser-better-default
 
 The installed commands follow the plugin checkout, so picker code updates apply
 right away. If a release changes desktop entries or adds a command, open the
-setup window and click **Refresh launchers** to apply those changes.
+editor, choose **Settings**, and click **Refresh launchers** to apply those changes.
 
 If you use the optional [Chromium web-app bridge](docs/BRIDGE.md), set it up from
 `~/.config/omarchy/plugins/browser-better-default` so it follows that checkout
@@ -89,7 +101,8 @@ browser flags (or in the unpacked extension settings) with the plugin checkout's
 
 ### Manual install
 
-Use this method on other Linux desktops, or to run from your own checkout:
+To develop from your own checkout, you can install the link handler manually.
+The rules editor opens through the enabled Omarchy plugin.
 
 ```sh
 git clone https://github.com/dataforxyz/browser-better-default
@@ -138,14 +151,43 @@ set `BROWSER_PICKER_INSTALL_BRIDGE=1`. See
   export BROWSER_PICKER_MENU='wofi --dmenu --prompt "$BROWSER_PICKER_PROMPT"'
   ```
 
-- Python 3 + PyGObject (GTK 4) for the rules editor (`python-gobject` on Arch).
+- Python 3 for app detection, recommendations, and rules storage.
 - `xdg-utils`, `util-linux` (`setsid`).
+
+## Using the rules editor
+
+Rules decide which browser profile or app opens a link. Enter a domain such as
+`example.com` in the pattern field and choose where matching links should open.
+Browser Picker tries enabled rules in priority order, starting at #1. Sorting,
+filtering, and grouping change how you see the rules. Use **Reorder** to change
+which rule is tried first. When two enabled rules use the same pattern, the
+**Conflicts** filter shows the later rules. Paste a full URL into Rules search
+to check which rules match and which destination would open.
+
+**Suggestions** offers rules for detected apps and destinations you've chosen
+before. Review the pattern and destination before adding a suggestion. With
+**Autosave** off, click **Save changes** to apply rule edits and your
+**Unmatched links** choice.
+
+## Recommended setup
+
+Open **Settings → Run recommended setup** any time:
+
+![Set up link handling with separate actions for desktop links and links inside web apps](assets/setup.png)
+
+1. **Set up link handling** makes Browser Picker the system handler for web
+   and email links. Install the [web app bridge](docs/BRIDGE.md) here if you
+   want Browser Better Default to open links clicked inside Chromium web apps.
+2. **Recommended app rules** lets you choose which detected apps should open
+   matching links, such as Zoom meeting links.
+3. **Optional extras** lets you pin web apps to a profile or create profile
+   shortcuts.
 
 ## Configuration
 
 Three files in `~/.config/browser-picker/`:
 
-- **`browsers.conf`** — `Label|||command` per line. The picker auto-adds newly discovered profiles; you can also use *Rescan profiles* in the editor.
+- **`browsers.conf`** — `Label|||command` per line. The picker auto-adds newly discovered profiles; you can also use *Rescan targets* in the editor.
 - **`rules.conf`** — `enabled|||pattern|||label[|||private]` per line (optional 4th field
   `1` opens matching links in a private window). Managed by the editor; `label` can name either a browser profile or a local app.
 - **`apps.conf`** — optional `Label|||pattern|||command` overrides for custom local apps, `uri:` scheme rewrites, or disabling an auto-discovered app.
@@ -171,7 +213,8 @@ you edited by hand. Set `BROWSER_PICKER_AUTO_RESCAN=0` if you do not want the pi
 
 Chromium `--app=` windows (including omarchy web apps) can open clicked links internally,
 bypassing the system default browser. If you want those links to go through browser-picker
-as well, opt into the bridge during install:
+as well, choose **Install extension** in the Set up link handling step of
+**Settings → Run recommended setup**, or opt into the bridge from the command line:
 
 ```sh
 ./install.sh --with-bridge
@@ -179,9 +222,8 @@ as well, opt into the bridge during install:
 
 You can also run `extension/install-bridge.sh` directly after a core install. Read
 **[docs/BRIDGE.md](docs/BRIDGE.md)** first. The bridge installs a native-messaging host
-and auto-loads a small local Chromium extension by editing user-level browser flags files;
-this is intentionally opt-in because it grants the extension broad navigation permissions
-and logs diverted app-window URLs locally for debugging.
+and adds the extension to user-level browser flags files. The extension uses Chromium's
+`webNavigation` and `nativeMessaging` permissions to pass eligible links to the local picker.
 
 ## Privacy and safety
 
@@ -189,8 +231,8 @@ and logs diverted app-window URLs locally for debugging.
 - Your profile list and rules live under `~/.config/browser-picker/`.
 - The local recommender stores up to 1000 recently picked `http(s)` URLs in
   `~/.config/browser-picker/history.json`. Delete that file any time to reset learning.
-- The optional web-app bridge writes diagnostics, including app-window link URLs, to
-  `~/.cache/browser-picker/bridge.log`. Delete that file any time.
+- Older versions of the optional bridge logged app-window URLs to
+  `~/.cache/browser-picker/bridge.log`. You can delete that file.
 - `browsers.conf` commands are local shell command snippets. Do not paste browser-picker
   config from people you do not trust.
 
@@ -220,7 +262,7 @@ veto an obvious habit; a genuine 50/50 tie stays quiet):
 | a few orgs on a host you only use with one profile      | `github.com`      |
 
 Picks made in a **private/incognito** window are learned separately: repeat one and the
-shortcut offers a *private* default (e.g. *⭐ open in Brave 🕶 Private*), which writes a rule
+shortcut offers a *private* default (e.g. *⭐ example.com → Brave 🕶 Private*), which writes a rule
 that always opens that scope in a private window. Normal and private habits never mix.
 
 The **menu itself is smart-ordered**: the profile you're most likely to want for *this* link
@@ -246,6 +288,8 @@ minimum `2`.
 
 ## Development
 
+The test suite requires Python 3 and Node.js.
+
 ```sh
 bash tests/run.sh   # shellcheck + bash syntax + py_compile + unit tests
 ```
@@ -255,6 +299,7 @@ bash tests/run.sh   # shellcheck + bash syntax + py_compile + unit tests
 - `tests/test_apps.py` — native desktop app URL converters, XDG discovery, web apps, and `apps.conf`.
 - `tests/test_rules.py` — `default_pattern`, `normcmd`, `model_items`, `load_rules`, `load_labels`.
 - `tests/test_recommend.py` — local recommender pattern, ranking, private-mode, and rule-writing logic.
+- `tests/test_bridge.js` and `tests/test_bridge_host.py` — extension routing and native messaging.
 
 CI runs the same suite on every push/PR (see `.github/workflows/ci.yml`).
 

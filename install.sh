@@ -61,7 +61,7 @@ mkdir -p "$BIN" "$APPS" "$CFG"
 # Executables: symlinked so edits in the repo go live immediately.
 ln -sf "$REPO/bin/browser-picker"             "$BIN/browser-picker"
 ln -sf "$REPO/bin/browser-picker-apps"        "$BIN/browser-picker-apps"
-ln -sf "$REPO/bin/browser-picker-rules"       "$BIN/browser-picker-rules"
+ln -sf "$REPO/bin/browser-picker-rules"    "$BIN/browser-picker-rules"
 ln -sf "$REPO/bin/browser-picker-recommend"   "$BIN/browser-picker-recommend"
 ln -sf "$REPO/bin/browser-picker-profiles"    "$BIN/browser-picker-profiles"
 ln -sf "$REPO/bin/browser-picker-menu-select" "$BIN/browser-picker-menu-select"
@@ -94,11 +94,10 @@ fi
 
 cat <<EOF
 Installed browser-picker.
-  • Manage rules:   browser-picker-rules   (or "Browser Picker Rules Editor" in your launcher)
-  • Detect profiles: open the rules app and click "⟳ Rescan profiles"
+  • Manage rules:   browser-picker-rules   (or "Browser Better Default" in your launcher)
+  • Detect profiles: open the rules editor and rescan profiles
   • Config lives in: $CFG
-Click any link to see the picker. Omarchy uses its native menu; elsewhere install Walker
-or configure another menu with BROWSER_PICKER_MENU.
+Click any link to see the picker. Omarchy uses its native menu.
 
 Optional: Chromium/omarchy web-app windows bypass the normal system link handler. To route
 links opened from those app windows through browser-picker too, run:
