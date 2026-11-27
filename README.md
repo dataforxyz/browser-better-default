@@ -4,6 +4,24 @@ A Linux link picker that lets you choose a **browser profile, desktop app, or in
 web app**. Set smart defaults to open recurring links directly in your preferred app
 or profile.
 
+## Quick install
+
+On Omarchy Quattro, run this from your regular user account:
+
+```sh
+omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable
+```
+
+Then open **Browser Better Default** from the bar’s tray, or run the command below.
+On your first visit, choose **Start setup** to set your default link handler and
+review the optional extension and app rules.
+
+```sh
+omarchy-shell shell summon browser-better-default '{}'
+```
+
+[Manual install and update instructions](#install)
+
 **Open T3 Code thread links in the desktop app.** Click an `app.t3.codes` share link
 and choose **T3 Code** to jump to the exact thread, including delegated threads on
 linked environments. The picker also offers installed apps for supported links like
@@ -71,9 +89,10 @@ and remembers the decisions you want to make permanent.
 omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable
 ```
 
-Open **Browser Better Default** from the bar's tray, choose **Settings**, and click **Set as default
-link handler**. This registers Browser Picker for web and email links. If the
-tray is hidden, open the setup window from a terminal:
+Open **Browser Better Default** from the bar's tray and choose **Start setup**.
+Use **Set as default** to register it for web and email links. If you’ve already
+dismissed the prompt, choose **Settings → Run recommended setup**. If the tray
+is hidden, open the window from a terminal:
 
 ```sh
 omarchy-shell shell summon browser-better-default '{}'
