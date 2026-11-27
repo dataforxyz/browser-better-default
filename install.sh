@@ -56,6 +56,10 @@ case "$INSTALL_BRIDGE" in
     exit 2 ;;
 esac
 
+first_install=0
+if [ ! -e "$CFG/browsers.conf" ] && [ ! -e "$CFG/rules.conf" ]; then
+  first_install=1
+fi
 mkdir -p "$BIN" "$APPS" "$CFG"
 
 # Executables: symlinked so edits in the repo go live immediately.
@@ -109,4 +113,9 @@ if [ "$INSTALL_BRIDGE" = "1" ]; then
   echo
   echo "Installing optional Chromium/omarchy web-app bridge (--with-bridge)..."
   "$REPO/extension/install-bridge.sh"
+fi
+
+if [ "$first_install" = "1" ] && [ "$SET_DEFAULT" = "1" ] && [ -t 1 ] &&
+    [ -n "${WAYLAND_DISPLAY:-}" ] && command -v omarchy-shell >/dev/null 2>&1; then
+  omarchy-shell shell summon browser-better-default '{"setup":true}' >/dev/null 2>&1 || true
 fi

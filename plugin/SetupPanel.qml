@@ -10,6 +10,7 @@ Item {
 
   property var shell: null
   property bool opened: false
+  property bool startSetupOnLoad: false
   property string statusKey: ""
   property string errorText: ""
   property string pendingSort: ""
@@ -33,8 +34,10 @@ Item {
 
   function open(payloadJson) {
     let duplicateRequest = false
+    startSetupOnLoad = false
     try {
       const request = JSON.parse(payloadJson || "{}")
+      startSetupOnLoad = request?.setup === true
       if (request && typeof request.pattern === "string" && typeof request.url === "string"
           && /^(https?:\/\/|mailto:)/.test(request.url)) {
         if (pendingRule || pendingUrl)
@@ -57,6 +60,7 @@ Item {
 
   function close() {
     opened = false
+    startSetupOnLoad = false
     window.visible = false
   }
 
@@ -261,6 +265,11 @@ Item {
         else root.close()
       }
       root.applyPendingRule()
+      if (root.startSetupOnLoad) {
+        root.startSetupOnLoad = false
+        if (root.opened && !editor.onboardingSeen)
+          Qt.callLater(() => { if (root.opened) editor.startRecommendedSetup() })
+      }
     }
   }
 

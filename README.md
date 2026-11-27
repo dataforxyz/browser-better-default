@@ -9,12 +9,13 @@ or profile.
 On Omarchy Quattro, run this from your regular user account:
 
 ```sh
-omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable
+omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable &&
+  omarchy-shell shell summon browser-better-default '{"setup":true}'
 ```
 
-Then open **Browser Better Default** from the bar’s tray, or run the command below.
-On your first visit, choose **Start setup** to set your default link handler and
-review the optional extension and app rules.
+This opens **Browser Better Default** and starts the guide for setting up
+link handling, the optional extension, and app rules. To reopen the window later,
+use the bar’s tray or run:
 
 ```sh
 omarchy-shell shell summon browser-better-default '{}'
@@ -86,11 +87,11 @@ and remembers the decisions you want to make permanent.
 ### Omarchy Quattro (recommended)
 
 ```sh
-omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable
+omarchy plugin add https://github.com/dataforxyz/browser-better-default.git --enable &&
+  omarchy-shell shell summon browser-better-default '{"setup":true}'
 ```
 
-Open **Browser Better Default** from the bar's tray and choose **Start setup**.
-Use **Set as default** to register it for web and email links. If you’ve already
+In the guide, use **Set as default** to register it for web and email links. If you’ve already
 dismissed the prompt, choose **Settings → Run recommended setup**. If the tray
 is hidden, open the window from a terminal:
 
@@ -128,6 +129,9 @@ git clone https://github.com/dataforxyz/browser-better-default
 cd browser-better-default
 ./install.sh
 ```
+
+On a first interactive Wayland install, the script opens the guide if the
+Omarchy plugin is enabled. Updates and launcher refreshes leave the GUI closed.
 
 The `main` branch targets current Omarchy Quattro. The previous pre-Quattro version is
 preserved as [`archive/pre-quattro-20261115`](https://github.com/dataforxyz/browser-better-default/tree/archive/pre-quattro-20261115).
