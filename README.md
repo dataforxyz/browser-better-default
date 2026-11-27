@@ -21,7 +21,11 @@ Built for [Omarchy Quattro](https://omarchy.org) / Hyprland with its native menu
   <img src="assets/editor.png" alt="The rules editor" height="300">
 </p>
 
-<p align="center"><em>Left: pick a browser + profile per link. Right: smart-default rules editor.</em></p>
+<p align="center"><em>Choose where a link opens, then save a rule for links you want to open the same way next time.</em></p>
+
+| [Suggestions](#using-the-rules-editor) | [Settings](#recommended-setup) |
+| --- | --- |
+| ![Suggestions with links, destinations, and Add actions](assets/suggestions.png) | ![Settings with autosave, unmatched links, and setup controls](assets/settings.png) |
 
 ## Why
 
@@ -168,6 +172,8 @@ before. Review the pattern and destination before adding a suggestion. With
 ## Recommended setup
 
 Open **Settings → Run recommended setup** any time:
+
+![Set up link handling with separate actions for desktop links and links inside web apps](assets/setup.png)
 
 1. **Set up link handling** makes Browser Picker the system handler for web
    and email links. Install the [web app bridge](docs/BRIDGE.md) here if you
