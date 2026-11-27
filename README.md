@@ -61,10 +61,10 @@ and remembers the decisions you want to make permanent.
   directly, no menu. Plain text matches on **path/host boundaries** (covers a URL *and its
   child paths*, but `…/repo` won't match `…/repo-staging`); `*`/`?` = glob; `regex:` prefix
   = full regex. First match wins.
-- **In-flow rule creation** — pick *📌 Always open this site in…* from the menu and the Omarchy
+- **In-flow rule creation** — pick *📌 Create a rule for links like this…* from the menu and the Omarchy
   editor opens **pre-filled** from the current URL; trim the scope, pick a profile, Save.
 - **Learns your habits** — repeat a profile for a site and the picker grows explicit
-  `⭐ scope → profile` shortcuts at the top (see below). Fully **local & offline**.
+  `⭐ Always open scope in profile` shortcuts below one-time choices (see below). Fully **local & offline**.
 - **Private/incognito** — every profile also appears as a *🕶 Private* twin in the menu
   (regular profiles first, private ones below), so one pick opens it in a private window
   (`--incognito` / `--private-window` chosen per browser family).
@@ -268,8 +268,8 @@ open a matching link the picker shows one-click default shortcuts near the top, 
 scope front-loaded so it is clear what will be saved:
 
 ```
-⭐  github.com/myorg → Chromium — Work
-⭐  github.com/myorg/myrepo → Chromium — Work
+⭐  Always open github.com/myorg in Chromium — Work
+⭐  Always open github.com/myorg/myrepo in Chromium — Work
 ```
 
 Pick it and the link opens in that profile **and** the rule is written, so it auto-routes from
@@ -285,14 +285,13 @@ veto an obvious habit; a genuine 50/50 tie stays quiet):
 | a few orgs on a host you only use with one profile      | `github.com`      |
 
 Picks made in a **private/incognito** window are learned separately: repeat one and the
-shortcut offers a *private* default (e.g. *⭐ example.com → Brave 🕶 Private*), which writes a rule
+shortcut offers a *private* default (e.g. *⭐ Always open example.com in Brave 🕶 Private*), which writes a rule
 that always opens that scope in a private window. Normal and private habits never mix.
 
-The **menu itself is smart-ordered**: the profile you're most likely to want for *this* link
-(by host/path affinity, then overall use) is the **first** item, any `⭐ scope → profile`
-shortcuts follow it, and the rest of your profiles follow most-used-first; the manual
-*📌 Always open…* and *⚙ Edit rules…* sit at the end. (Ordering controls what's surfaced
-first; once you start typing, your menu program does its own fuzzy ranking.)
+The **menu itself is smart-ordered**. The destination you're most likely to want
+for this link comes first. One-time destinations and private windows come
+before the **Always open** choices that save a rule. **Create a rule for links
+like this** and **Edit rules** sit at the end. Type to filter the list.
 
 This is a **local recommender** (`browser-picker-recommend`) — no network, no API keys, no
 LLM; your URLs never leave the machine. History lives in

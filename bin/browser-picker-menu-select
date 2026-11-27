@@ -8,4 +8,4 @@ command -v omarchy-menu-select >/dev/null 2>&1 || {
   printf 'browser-picker: omarchy-menu-select is unavailable\n' >&2
   exit 127
 }
-omarchy-menu-select "$BROWSER_PICKER_PROMPT" "${options[@]}" -- --width "${BROWSER_PICKER_MENU_WIDTH:-720}" --maxheight "${BROWSER_PICKER_MENU_MAXHEIGHT:-600}"
+omarchy-menu-select "${BROWSER_PICKER_PROMPT%…}" "${options[@]}" -- --width "${BROWSER_PICKER_MENU_WIDTH:-720}" --maxheight "${BROWSER_PICKER_MENU_MAXHEIGHT:-600}"
