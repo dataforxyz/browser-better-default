@@ -56,12 +56,24 @@ Item {
     property string suggestionSort: "recommended"
     property string suggestionKind: "all"
     property string editingSuggestionKey: ""
+    property int suggestionPatternRevision: 0
+    property string pendingSuggestionKey: ""
+    property int lastAddedUid: -1
+    property var suggestionUndo: null
     readonly property bool tracingUrl: /^(https?:\/\/\S+|mailto:\S+)$/i.test(searchQuery.trim())
     readonly property string traceRequest: tracingUrl
         ? JSON.stringify(Object.assign(buildSavePayload(draftRules, draftFallback), { url: searchQuery.trim() }))
         : ""
-    readonly property var regexPatterns: [...new Set(draftRules.map(rule => rule.pattern.trim())
-        .filter(pattern => pattern.startsWith("regex:")))]
+    readonly property var regexPatterns: {
+        suggestionPatternRevision;
+        const patterns = draftRules.map(rule => rule.pattern.trim());
+        for (let i = 0; i < rawSuggestions.length; i++) {
+            const raw = rawSuggestions[i];
+            const edit = _suggestionEdits[suggestionKeyFor(raw, i)];
+            patterns.push(String(edit && edit.pattern !== undefined ? edit.pattern : raw.pattern || "").trim());
+        }
+        return [...new Set(patterns.filter(pattern => pattern.startsWith("regex:")))];
+    }
     property var invalidRegexPatterns: ({})
     property string validatedRegexSignature: "[]"
     property bool _manualSavePending: false
@@ -426,8 +438,8 @@ Item {
             if (searchField)
                 searchField.forceActiveFocus();
 
-        } else if (suggestionsList && suggestionsList.count > 0) {
-            suggestionsList.forceActiveFocus();
+        } else if (activeTab === "suggestions" && actionableSuggestionCount > 0) {
+            suggestionSearchField.forceActiveFocus();
         }
     }
 
@@ -651,7 +663,7 @@ Item {
         var incomingFallback = safeDoc.fallback !== undefined && safeDoc.fallback !== null ? String(safeDoc.fallback).trim() : "";
         var incomingSig = payloadSignature(incomingRules, incomingFallback);
         var wasFirstLoad = !_hasLoadedDocument;
-        var keepSavedDraft = _awaitingSave && _automaticSave
+        var keepSavedDraft = _awaitingSave
             && payloadSignature(draftRules, draftFallback) === incomingSig;
         var shouldReplaceDraft = wasFirstLoad || _awaitingSave || !dirty || (incomingRevision !== _lastRevision && payloadSignature(draftRules, draftFallback) === incomingSig);
         if (wasFirstLoad && ["priority", "site", "pattern", "target"].includes(doc.sort))
@@ -670,6 +682,9 @@ Item {
             _automaticSave = false;
             _rescanInFlight = false;
             if (!keepSavedDraft) {
+                suggestionUndo = null;
+                lastAddedUid = -1;
+                pendingSuggestionKey = "";
                 editingSuggestionKey = "";
                 selectedRules = {};
                 selectingRules = false;
@@ -846,8 +861,7 @@ Item {
     }
 
     function rebuildSuggestions() {
-        var activePatterns = {
-        };
+        var activePatterns = Object.create(null);
         for (var i = 0; i < draftRules.length; i++) {
             if (draftRules[i].enabled) {
                 var p = String(draftRules[i].pattern || "").trim();
@@ -885,12 +899,17 @@ Item {
                 "pattern": effPattern,
                 "label": effLabel,
                 "isPrivate": effPrivate,
-                "kind": raw.kind || (root.isAppTarget(origLabel) ? "desktop" : "browser"),
+                "kind": suggestionTargetKind(effLabel),
                 "uses": Number(raw.uses) || 0,
                 "lastUsed": Number(raw.last_used) || 0
             });
         }
         actionableSuggestionCount = desired.length;
+        if (!desired.length) {
+            suggestionSearch = "";
+            suggestionSearchField.text = "";
+            suggestionKind = "all";
+        }
         const query = suggestionSearch.trim().toLowerCase();
         const shown = desired.filter(item =>
             (suggestionKind === "all" || item.kind === suggestionKind)
@@ -901,6 +920,8 @@ Item {
         else if (suggestionSort === "recent")
             shown.sort((a, b) => b.lastUsed - a.lastUsed || b.uses - a.uses);
         reconcileSuggestionsModel(shown);
+        if (editingSuggestionKey && !shown.some(item => item.suggestionKey === editingSuggestionKey))
+            editingSuggestionKey = "";
 
     }
 
@@ -1238,6 +1259,9 @@ Item {
             return ;
 
         removalUndo = [];
+        suggestionUndo = null;
+        pendingSuggestionKey = "";
+        suggestionPatternRevision++;
         _manualSavePending = false;
         draftRules = cloneRuleList(_baselineRules);
         editingSuggestionKey = "";
@@ -1260,6 +1284,11 @@ Item {
     }
 
     function finishRegexValidation() {
+        if (pendingSuggestionKey) {
+            const key = pendingSuggestionKey;
+            pendingSuggestionKey = "";
+            stageSuggestion(key);
+        }
         if (_manualSavePending) {
             _manualSavePending = false;
             statusMessage = "";
@@ -1352,11 +1381,14 @@ Item {
     }
 
     function setSuggestionPattern(key, pattern) {
+        pendingSuggestionKey = "";
+        if (statusIsWarning) { statusMessage = ""; statusIsWarning = false; }
         var edit = _ensureSuggestionEdit(key);
         if (!edit)
             return ;
 
         edit.pattern = String(pattern);
+        suggestionPatternRevision++;
         for (var i = 0; i < suggestionsModel.count; i++) {
             if (suggestionsModel.get(i).suggestionKey === key) {
                 suggestionsModel.setProperty(i, "pattern", edit.pattern);
@@ -1366,6 +1398,8 @@ Item {
     }
 
     function setSuggestionLabel(key, label) {
+        pendingSuggestionKey = "";
+        if (statusIsWarning) { statusMessage = ""; statusIsWarning = false; }
         var edit = _ensureSuggestionEdit(key);
         if (!edit)
             return ;
@@ -1380,6 +1414,8 @@ Item {
     }
 
     function setSuggestionPrivate(key, isPrivate) {
+        pendingSuggestionKey = "";
+        if (statusIsWarning) { statusMessage = ""; statusIsWarning = false; }
         var edit = _ensureSuggestionEdit(key);
         if (!edit)
             return ;
@@ -1396,6 +1432,38 @@ Item {
         }
     }
 
+    function suggestionTargetKind(label) {
+        const source = rawSuggestions.find(item => item.label === label && item.kind);
+        return source ? source.kind : (isAppTarget(label) ? "desktop" : "browser");
+    }
+
+    function suggestionError(pattern, label, isPrivate) {
+        if (!String(pattern).trim()) return "Enter a link pattern.";
+        const error = invalidPatternReason(pattern);
+        if (error) return error;
+        if (String(pattern).trim().startsWith("regex:")
+                && validatedRegexSignature !== JSON.stringify(regexPatterns)) return "Checking regex pattern…";
+        if (!label || label === noneFoundLabel) return "Choose a target.";
+        if (isMissingTarget(label)) return "Target '" + label + "' not found. Choose another target or Rescan.";
+        if (isPrivate && isAppTarget(label)) return "Local apps cannot open private windows. Turn off Private or choose a browser.";
+        if (draftRules.some(rule => rule.enabled && rule.pattern.trim() === String(pattern).trim()))
+            return "An enabled rule already uses this pattern. Review it in Rules.";
+        return "";
+    }
+
+    function focusSuggestion(index) {
+        if (!suggestionsModel.count) {
+            if (suggestionUndo) suggestionUndoButton.forceActiveFocus(); else tabSwitcher.forceActiveFocus();
+            return;
+        }
+        const next = Math.max(0, Math.min(index, suggestionsModel.count - 1));
+        suggestionsList.positionViewAtIndex(next, ListView.Contain);
+        Qt.callLater(() => {
+            const item = suggestionsList.itemAtIndex(next);
+            if (item) item.focusEdit(); else suggestionSearchField.forceActiveFocus();
+        });
+    }
+
     function stageSuggestion(key) {
         var foundRow = null;
         for (var i = 0; i < suggestionsModel.count; i++) {
@@ -1408,20 +1476,29 @@ Item {
         if (!foundRow)
             return ;
 
-        addSuggestionRules([{
+        if (foundRow.pattern.trim().startsWith("regex:")
+                && validatedRegexSignature !== JSON.stringify(regexPatterns)) {
+            pendingSuggestionKey = key;
+            regexValidationDelay.restart();
+            return;
+        }
+        const index = i;
+        if (addSuggestionRules([{
             pattern: foundRow.pattern, label: foundRow.label, private: foundRow.isPrivate
-        }], key);
+        }], key)) focusSuggestion(index);
     }
 
     function addSuggestionRules(candidates, suggestionKey) {
+        if (busy || _awaitingSave) return false;
+        const before = cloneRuleList(draftRules);
         const next = draftRules.slice();
         for (const candidate of candidates) {
             const pattern = String(candidate.pattern || "").trim();
             const label = String(candidate.label || "").trim();
             const isPrivate = !!candidate["private"];
-            if (!pattern || !label || label === noneFoundLabel || invalidPatternReason(pattern)
-                    || (isPrivate && isAppTarget(label))) {
-                statusMessage = "Choose a valid pattern and target before adding the rule.";
+            const error = suggestionError(pattern, label, isPrivate);
+            if (error) {
+                statusMessage = error;
                 statusIsWarning = true;
                 statusShowRulesLink = false;
                 return false;
@@ -1438,6 +1515,9 @@ Item {
                 });
             }
         }
+        const changed = next.filter(rule => !before.some(old => old.uid === rule.uid && old.enabled === rule.enabled));
+        if (suggestionKey) suggestionUndo = { key: suggestionKey, changed: changed, before: before };
+        lastAddedUid = changed.length ? changed[changed.length - 1].uid : -1;
         draftRules = next;
         if (suggestionKey)
             _stagedSuggestionKeys[suggestionKey] = true;
@@ -1445,7 +1525,8 @@ Item {
         rebuildVisibleRules();
         rebuildSuggestions();
         editingSuggestionKey = "";
-        statusMessage = "";
+        statusMessage = "Added " + candidates.map(item => item.pattern + " → " + item.label).join(", ")
+            + (autosave && allowAutosave ? ". Saving automatically." : ". Save changes to apply.");
         statusIsWarning = false;
         statusShowRulesLink = true;
         return true;
@@ -1513,9 +1594,45 @@ Item {
     }
 
     function closeSuggestionEditor() {
+        pendingSuggestionKey = "";
+        let index = 0;
+        for (let i = 0; i < suggestionsModel.count; i++)
+            if (suggestionsModel.get(i).suggestionKey === editingSuggestionKey) index = i;
         editingSuggestionKey = "";
         rebuildSuggestions();
+        focusSuggestion(index);
+    }
+
+    function clearSuggestionFilters() {
+        suggestionSearch = "";
+        suggestionSearchField.text = "";
+        suggestionKind = "all";
+        rebuildSuggestions();
         suggestionSearchField.forceActiveFocus();
+    }
+
+    function undoSuggestion() {
+        if (!suggestionUndo || busy || _awaitingSave) return;
+        const undo = suggestionUndo;
+        const next = draftRules.slice();
+        let reverted = 0;
+        for (const changed of undo.changed) {
+            const index = next.findIndex(rule => rule.uid === changed.uid);
+            if (index < 0) continue;
+            const current = next[index];
+            if (current.pattern !== changed.pattern || current.label !== changed.label
+                    || current.isPrivate !== changed.isPrivate || current.enabled !== changed.enabled) continue;
+            const old = undo.before.find(rule => rule.uid === changed.uid);
+            if (old) next[index] = old; else next.splice(index, 1);
+            reverted++;
+        }
+        if (reverted) delete _stagedSuggestionKeys[undo.key];
+        suggestionUndo = null;
+        draftRules = next;
+        recomputeDirty(); rebuildVisibleRules(); rebuildSuggestions();
+        statusMessage = reverted ? "Undid added suggestion." : "Kept the added rule because it was edited. Nothing undone.";
+        statusIsWarning = false;
+        statusShowRulesLink = false;
     }
 
     ListModel {
@@ -1570,6 +1687,8 @@ Item {
                 }]
                 onChanged: function(nextTab) {
                     root.activeTab = nextTab;
+                    if (nextTab === "rules") root.statusShowRulesLink = false;
+                    if (nextTab !== "suggestions") root.editingSuggestionKey = "";
                     if (nextTab === "suggestions")
                         root.rebuildSuggestions();
 
@@ -1588,6 +1707,11 @@ Item {
                 fontSize: Style.font.bodySmall
                 onClicked: {
                     root.activeTab = "rules";
+                    root.searchQuery = ""; searchField.text = ""; root.filterMode = "all";
+                    const rule = root.draftRules.find(item => item.uid === root.lastAddedUid);
+                    if (rule && !root.expandedSites[root.ruleSite(rule.pattern)]) root.toggleSite(root.ruleSite(rule.pattern));
+                    root.rebuildVisibleRules();
+                    Qt.callLater(() => root.scrollToRuleUid(root.lastAddedUid));
                     root.statusShowRulesLink = false;
                 }
             }
@@ -2025,29 +2149,45 @@ Item {
 
         }
 
-        RowLayout {
-            visible: root.activeTab === "suggestions"
+        ColumnLayout {
+            visible: root.activeTab === "suggestions" && root.actionableSuggestionCount > 0
             Layout.fillWidth: true
             spacing: Style.spacing.sm
-
-            TextField {
-                id: suggestionSearchField
+            Item {
                 Layout.fillWidth: true
-                Layout.minimumWidth: Style.space(90)
-                placeholderText: "Search suggestions…"
-                foreground: root.foreground
-                accent: root.accent
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                horizontalPadding: Style.spacing.lg
-                verticalPadding: Style.spacing.sm
-                text: root.suggestionSearch
-                onTextEdited: {
-                    root.suggestionSearch = text;
-                    root.rebuildSuggestions();
-                    suggestionsList.positionViewAtBeginning();
+                implicitHeight: suggestionSearchField.implicitHeight
+                TextField {
+                    id: suggestionSearchField
+                    anchors.fill: parent
+                    placeholderText: "Search suggestions…"
+                    foreground: root.foreground; accent: root.accent
+                    font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                    horizontalPadding: Style.spacing.lg; verticalPadding: Style.spacing.sm
+                    rightPadding: suggestionClear.visible ? Style.space(26) : Style.spacing.lg
+                    text: root.suggestionSearch
+                    onTextChanged: {
+                        if (root.suggestionSearch !== text) {
+                            root.suggestionSearch = text;
+                            root.rebuildSuggestions();
+                            suggestionsList.positionViewAtBeginning();
+                        }
+                    }
+                    Keys.onEscapePressed: event => {
+                        if (text !== "") text = ""; else event.accepted = false;
+                    }
+                }
+                PanelActionButton {
+                    id: suggestionClear
+                    visible: suggestionSearchField.text !== ""
+                    anchors.right: parent.right; anchors.rightMargin: Style.spacing.xs; anchors.verticalCenter: parent.verticalCenter
+                    iconText: "\u00d7"; tooltipText: "Clear search"; size: Style.space(20)
+                    foreground: root.foreground
+                    onClicked: { suggestionSearchField.text = ""; suggestionSearchField.forceActiveFocus(); }
                 }
             }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.spacing.sm
             HelpDropdown {
                 tooltipText: "Sort suggestions by recommendation, usage, or recency"
                 Layout.preferredWidth: Style.space(132)
@@ -2083,7 +2223,15 @@ Item {
                     suggestionsList.positionViewAtBeginning();
                 }
             }
+                Item { Layout.fillWidth: true }
+                Text {
+                    text: suggestionsModel.count + " / " + root.actionableSuggestionCount
+                    color: Util.alpha(root.foreground, 0.65)
+                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                }
+            }
         }
+
 
         PanelSeparator {
             Layout.fillWidth: true
@@ -2703,7 +2851,7 @@ Item {
                 anchors.fill: parent
                 visible: root.activeTab === "suggestions"
                 clip: true
-                reuseItems: true
+                reuseItems: false
                 boundsBehavior: Flickable.StopAtBounds
                 model: suggestionsModel
 
@@ -2750,9 +2898,10 @@ Item {
                     readonly property bool targetMissing: root.isMissingTarget(label)
                     readonly property bool invalidPrivate: isApp && isPrivate
                     readonly property string patternError: root.invalidPatternReason(pattern)
-                    readonly property bool hasWarning: targetMissing || invalidPrivate || patternError !== ""
-                    readonly property bool canStage: pattern.trim() !== "" && patternError === "" && label.trim() !== "" && label !== root.noneFoundLabel && !invalidPrivate
-                    readonly property string warningText: patternError !== "" ? patternError : (invalidPrivate ? ("'" + label + "' is a local app and cannot open private windows — pick a browser or turn off Private.") : (targetMissing ? ("Target '" + label + "' not found — pick another or Rescan.") : ""))
+                    readonly property string warningText: root.suggestionError(pattern, label, isPrivate)
+                    readonly property bool hasWarning: warningText !== ""
+                    readonly property bool canStage: !hasWarning && !root.busy && !root._awaitingSave
+                    function focusEdit() { suggestionEditButton.forceActiveFocus(); }
 
                     readonly property bool editing: root.editingSuggestionKey === suggestionKey
                     width: suggestionsList.width - (suggestionScrollBar.visible ? suggestionScrollBar.width : 0)
@@ -2772,50 +2921,50 @@ Item {
                             visible: !suggestionCard.editing
                             spacing: Style.spacing.sm
 
-                            Text {
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                textFormat: Text.PlainText
-                                text: suggestionCard.title
-                                color: root.foreground
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.bodySmall
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                Layout.preferredWidth: Style.space(155)
-                                Layout.minimumWidth: Style.space(88)
-                                textFormat: Text.PlainText
-                                text: suggestionCard.label + (suggestionCard.isPrivate ? " · Private" : "")
-                                color: Util.alpha(root.foreground, 0.8)
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.bodySmall
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                visible: suggestionsList.width >= Style.space(510)
-                                Layout.preferredWidth: Style.space(96)
-                                textFormat: Text.PlainText
-                                text: suggestionCard.reason
-                                color: Util.alpha(root.foreground, 0.65)
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                                elide: Text.ElideRight
+                                Layout.minimumWidth: 0
+                                spacing: Style.spacing.xxs
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: suggestionCard.title; textFormat: Text.PlainText
+                                    color: root.foreground; font.family: root.fontFamily
+                                    font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: suggestionCard.pattern; textFormat: Text.PlainText
+                                    color: Util.alpha(root.foreground, 0.65); font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption; wrapMode: Text.WrapAnywhere
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "→ " + suggestionCard.label + (suggestionCard.isPrivate ? " · Private" : "")
+                                    textFormat: Text.PlainText
+                                    color: suggestionCard.targetMissing ? root.urgent : Util.alpha(root.foreground, 0.8)
+                                    font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                                    wrapMode: Text.Wrap
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    visible: text !== ""
+                                    text: suggestionCard.hasWarning ? suggestionCard.warningText : suggestionCard.reason
+                                    textFormat: Text.PlainText
+                                    color: suggestionCard.hasWarning ? root.urgent : Util.alpha(root.foreground, 0.65)
+                                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                                    wrapMode: Text.Wrap
+                                }
                             }
 
                             Button {
+                                id: suggestionEditButton
+                                objectName: "suggestionEdit-" + suggestionCard.suggestionKey
                                 text: "Edit"
                                 fontSize: Style.font.bodySmall
                                 foreground: Util.alpha(root.foreground, 0.75)
                                 focusable: true
                                 tooltipText: "Review or change the link pattern, target, and privacy"
-                                onClicked: root.editingSuggestionKey = suggestionCard.suggestionKey
-                            }
-
-                            WarningBadge {
-                                visible: suggestionCard.hasWarning
-                                tooltipText: suggestionCard.warningText
+                                onClicked: { root.editingSuggestionKey = suggestionCard.suggestionKey; root.rebuildSuggestions(); }
                             }
 
                             Button {
@@ -2823,8 +2972,9 @@ Item {
                                 fontSize: Style.font.bodySmall
                                 bordered: true
                                 enabled: suggestionCard.canStage
+                                opacity: enabled ? 1 : 0.4
                                 focusable: true
-                                tooltipText: root.autosave ? "Add a rule and save it automatically"
+                                tooltipText: suggestionCard.hasWarning ? suggestionCard.warningText : root.autosave ? "Add a rule and save it automatically"
                                     : "Add a rule to the draft. Save changes to apply it."
                                 onClicked: root.stageSuggestion(suggestionCard.suggestionKey)
                             }
@@ -2849,6 +2999,7 @@ Item {
 
                                 TextField {
                                     id: suggPatternField
+                                    objectName: "suggestionPattern-" + suggestionCard.suggestionKey
 
                                     property string syncedText: suggestionCard.pattern
 
@@ -2863,19 +3014,27 @@ Item {
                                     horizontalPadding: Style.spacing.md
                                     verticalPadding: Style.spacing.xs
                                     onSyncedTextChanged: {
-                                        if (!activeFocus && text !== syncedText)
+                                        if (text !== syncedText)
                                             text = syncedText;
 
                                     }
                                     Component.onCompleted: {
                                         text = suggestionCard.pattern;
-                                        cursorPosition = 0;
+                                        cursorPosition = text.length;
                                         forceActiveFocus();
                                     }
                                     Keys.onEscapePressed: root.closeSuggestionEditor()
                                     onTextEdited: root.setSuggestionPattern(suggestionCard.suggestionKey, text)
+                                    onAccepted: root.stageSuggestion(suggestionCard.suggestionKey)
                                 }
 
+                                Text {
+                                    Layout.fillWidth: true
+                                    visible: suggestionCard.hasWarning
+                                    text: suggestionCard.warningText; textFormat: Text.PlainText
+                                    wrapMode: Text.Wrap; color: root.urgent
+                                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                                }
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: Style.spacing.md
@@ -2903,11 +3062,21 @@ Item {
                                         onToggled: root.setSuggestionPrivate(suggestionCard.suggestionKey, !suggestionCard.isPrivate)
                                     }
 
-                                    WarningBadge {
-                                        visible: suggestionCard.hasWarning
-                                        tooltipText: suggestionCard.warningText
+                                    Text {
+                                        visible: !suggestionCard.isApp || suggestionCard.isPrivate
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.setSuggestionPrivate(suggestionCard.suggestionKey, !suggestionCard.isPrivate)
+                                        }
+                                        text: "Private"; color: Util.alpha(root.foreground, 0.7)
+                                        font.family: root.fontFamily; font.pixelSize: Style.font.caption
                                     }
 
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Item { Layout.fillWidth: true }
                                     Button {
                                         text: "Close"
                                         tooltipText: "Collapse the editor and keep your suggestion edits"
@@ -2917,7 +3086,7 @@ Item {
 
                                     Button {
                                         enabled: suggestionCard.canStage
-                                        opacity: enabled ? 1 : 0.5
+                                        opacity: enabled ? 1 : 0.4
                                         iconText: "󰄬"
                                         text: "Add to rules"
                                         bordered: true
@@ -2930,7 +3099,7 @@ Item {
                                         iconSize: Style.font.iconSmall
                                         horizontalPadding: Style.spacing.lg
                                         verticalPadding: Style.spacing.xs
-                                        tooltipText: root.autosave ? "Add a rule and save it automatically"
+                                        tooltipText: suggestionCard.hasWarning ? suggestionCard.warningText : root.autosave ? "Add a rule and save it automatically"
                                             : "Add a rule to the draft. Save changes to apply it."
                                         onClicked: root.stageSuggestion(suggestionCard.suggestionKey)
                                     }
@@ -2947,19 +3116,34 @@ Item {
 
             }
 
-            // Empty state for Suggestions view
-            Text {
+            // Empty and filtered Suggestions states
+            ColumnLayout {
                 anchors.centerIn: parent
                 width: Math.min(parent.width - Style.spacing.huge * 2, Style.space(400))
                 visible: root.activeTab === "suggestions" && suggestionsModel.count === 0
-                textFormat: Text.PlainText
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-                text: root.suggestionSearch.trim() || root.suggestionKind !== "all"
-                    ? "No suggestions match these filters." : "No new suggestions yet."
-                color: Util.alpha(root.foreground, 0.65)
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
+                spacing: Style.spacing.md
+                Text {
+                    Layout.fillWidth: true
+                    textFormat: Text.PlainText; horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                    text: root.suggestionSearch.trim() || root.suggestionKind !== "all"
+                        ? "No suggestions match these filters."
+                        : "No new suggestions yet. Suggestions come from detected apps and repeated link choices."
+                    color: Util.alpha(root.foreground, 0.65)
+                    font.family: root.fontFamily; font.pixelSize: Style.font.body
+                }
+                Button {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: root.suggestionSearch.trim() || root.suggestionKind !== "all" ? "Clear filters" : "Rescan targets"
+                    bordered: true; focusable: true
+                    enabled: !root.busy && (root.suggestionSearch.trim() !== "" || root.suggestionKind !== "all" || !root.dirty)
+                    opacity: enabled ? 1 : 0.4
+                    tooltipText: root.dirty ? "Save or discard changes before rescanning targets." : "Find newly installed targets"
+                    onClicked: {
+                        if (root.suggestionSearch.trim() || root.suggestionKind !== "all") root.clearSuggestionFilters();
+                        else root.requestRescan();
+                    }
+                }
             }
 
         }
@@ -3187,6 +3371,17 @@ Item {
             Layout.fillHeight: true
         }
 
+        RowLayout {
+            Layout.fillWidth: true
+            visible: root.suggestionUndo !== null
+            Text {
+                Layout.fillWidth: true
+                text: "Suggestion added to rules"; textFormat: Text.PlainText
+                color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+            }
+            Button { id: suggestionUndoButton; text: "Undo"; bordered: true; focusable: true; enabled: !root.busy && !root._awaitingSave; onClicked: root.undoSuggestion() }
+            Button { text: "Dismiss"; focusable: true; onClicked: root.suggestionUndo = null }
+        }
         RowLayout {
             Layout.fillWidth: true
             visible: root.removalUndo.length > 0
